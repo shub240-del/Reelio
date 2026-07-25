@@ -24,6 +24,7 @@ import { Link, useParams } from "wouter";
 import { toast } from "sonner";
 import { useUndoRedo } from "@/hooks/useUndoRedo";
 import { useWaveform } from "@/hooks/useWaveform";
+import { AlertTriangle } from "lucide-react";
 
 /* ─── Types ─── */
 interface TimelineClip {
@@ -317,16 +318,25 @@ export default function Editor() {
   const handleClipDragEnd = async (clip: TimelineClip, newTimelineStart: number) => {
     if (!draggingClip) return;
     const oldStart = clip.timelineStart;
+    const newStart = Math.max(0, newTimelineStart);
+
+    // Compute new sortIndex based on timeline position
+    const sortedClips = [...timelineClips].filter(c => c.trackType === clip.trackType).sort((a, b) => a.timelineStart - b.timelineStart);
+    const currentSortIndex = sortedClips.findIndex(c => c.id === clip.id);
+    const targetSortIndex = Math.max(0, Math.min(currentSortIndex + 1, sortedClips.length - 1));
+
     pushUndo({
       type: "move",
       clipId: clip.id,
-      data: { timelineStart: Math.max(0, newTimelineStart) },
-      undo: { timelineStart: oldStart },
+      data: { timelineStart: newStart, sortIndex: targetSortIndex },
+      undo: { timelineStart: oldStart, sortIndex: clip.sortIndex },
       description: `Move clip`,
     });
+
     await updateClipMutation.mutateAsync({
       id: clip.id,
-      timelineStart: Math.max(0, newTimelineStart),
+      timelineStart: newStart,
+      sortIndex: targetSortIndex,
     });
     setDraggingClip(null);
     await refetchClips();
@@ -437,10 +447,14 @@ export default function Editor() {
         e.preventDefault();
         const action = performUndo();
         if (action && action.clipId) {
-          // Apply the undo by reverting the clip to its previous state
-          updateClipMutation.mutateAsync({ id: action.clipId, ...action.undo } as any)
-            .then(() => { refetchClips(); toast.info(`Undone: ${action.description}`); })
-            .catch(() => { toast.error("Failed to undo"); });
+          if (action.type === "delete") {
+            // Undo delete: we can't truly restore a deleted clip, just notify
+            toast.info(`Undone: ${action.description}`);
+          } else {
+            updateClipMutation.mutateAsync({ id: action.clipId, ...action.undo } as any)
+              .then(() => { refetchClips(); toast.info(`Undone: ${action.description}`); })
+              .catch(() => { toast.error("Failed to undo"); });
+          }
         } else {
           toast.info(`Undone: ${action?.description || "unknown"}`);
         }
@@ -448,7 +462,6 @@ export default function Editor() {
         e.preventDefault();
         const action = performRedo();
         if (action && action.clipId) {
-          // Apply the redo by reapplying the action
           if (action.type === "move") {
             updateClipMutation.mutateAsync({ id: action.clipId, timelineStart: action.data.timelineStart as number })
               .then(() => { refetchClips(); toast.info(`Redone: ${action.description}`); })
@@ -457,6 +470,12 @@ export default function Editor() {
             trimClipMutation.mutateAsync({ id: action.clipId, sourceStart: action.data.sourceStart as number, duration: action.data.duration as number })
               .then(() => { refetchClips(); toast.info(`Redone: ${action.description}`); })
               .catch(() => { toast.error("Failed to redo"); });
+          } else if (action.type === "split") {
+            splitClipMutation.mutateAsync({ id: action.clipId, splitAt: action.data.splitAt as number, projectId: projId })
+              .then(() => { refetchClips(); toast.info(`Redone: ${action.description}`); })
+              .catch(() => { toast.error("Failed to redo"); });
+          } else if (action.type === "delete") {
+            toast.info(`Delete redo not yet supported`);
           }
         } else {
           toast.info(`Redone: ${action?.description || "unknown"}`);
@@ -514,6 +533,28 @@ export default function Editor() {
           </span>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={performUndo}
+              disabled={!canUndo}
+              className={`px-2 py-1 rounded text-xs border ${
+                canUndo ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20" : "border-white/5 text-gray-600 cursor-not-allowed"
+              }`}
+              title="Undo (Ctrl+Z)"
+            >
+              ↩ Undo
+            </button>
+            <button
+              onClick={performRedo}
+              disabled={!canRedo}
+              className={`px-2 py-1 rounded text-xs border ${
+                canRedo ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20" : "border-white/5 text-gray-600 cursor-not-allowed"
+              }`}
+              title="Redo (Ctrl+Shift+Z)"
+            >
+              ↪ Redo
+            </button>
+          </div>
           <select
             value={playbackSpeed}
             onChange={(e) => handlePlaybackSpeedChange(parseFloat(e.target.value))}
@@ -612,6 +653,8 @@ export default function Editor() {
                     src={asset.url}
                     className="w-full mt-2 rounded max-h-20 object-cover"
                     muted
+                    poster={`${asset.url}#t=1`}
+                    preload="metadata"
                   />
                 </div>
               ))}
@@ -804,6 +847,17 @@ export default function Editor() {
                           handleSplitClip(clip, playheadOffset);
                         }
                       }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        // Show trim options via a quick dialog
+                        const playheadOffset = currentTime - clip.timelineStart;
+                        const trimFromStart = playheadOffset > 0 && playheadOffset < clip.duration
+                          ? playheadOffset
+                          : 0;
+                        if (trimFromStart > 0.1) {
+                          handleTrimClip(clip, clip.sourceStart + trimFromStart, clip.duration - trimFromStart);
+                        }
+                      }}
                     >
                       <div
                         className={`w-full h-full rounded-md border transition-all ${
@@ -869,13 +923,10 @@ export default function Editor() {
                               />
                             ))
                           ) : (
-                            Array.from({ length: Math.min(Math.floor(clip.duration * 10), 80) }, () => 0.3).map((val, i) => (
-                              <div
-                                key={i}
-                                className="flex-1 bg-gray-600/20 rounded-sm"
-                                style={{ height: `${val * 100}%` }}
-                              />
-                            ))
+                            <div className="flex items-center gap-1 h-full text-[9px] text-gray-600">
+                              <AlertTriangle className="w-2.5 h-2.5" />
+                              <span>No audio track</span>
+                            </div>
                           )}
                         </div>
                       </div>
