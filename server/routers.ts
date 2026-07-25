@@ -29,6 +29,7 @@ import {
   updateProject,
 } from "./db";
 import { storagePut } from "./storage";
+import { extractVideoMetadata, isVideoFile } from "./videoMetadata";
 
 export const appRouter = router({
   system: systemRouter,
@@ -101,6 +102,21 @@ export const appRouter = router({
         const storageKey = `${userId}/projects/${input.projectId}/assets/${input.fileName}`;
         const { key, url } = await storagePut(storageKey, buffer, input.mimeType);
 
+        // Extract video metadata for video files
+        let duration = 0, width = 0, height = 0, fps = 30, hasAudio = false;
+        if (isVideoFile(input.mimeType)) {
+          try {
+            const meta = extractVideoMetadata(buffer);
+            duration = meta.duration;
+            width = meta.width;
+            height = meta.height;
+            fps = meta.fps || 30;
+            hasAudio = meta.hasAudio;
+          } catch {
+            // Metadata extraction failed, use defaults
+          }
+        }
+
         const asset = await createAsset({
           projectId: input.projectId,
           userId,
@@ -109,11 +125,11 @@ export const appRouter = router({
           url,
           mimeType: input.mimeType,
           sizeBytes: input.sizeBytes,
-          duration: 0,
-          width: 0,
-          height: 0,
-          fps: 0,
-          hasAudio: false,
+          duration,
+          width,
+          height,
+          fps,
+          hasAudio,
         });
 
         return asset;

@@ -22,6 +22,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "wouter";
 import { toast } from "sonner";
+import { useUndoRedo } from "@/hooks/useUndoRedo";
+import { useWaveform } from "@/hooks/useWaveform";
 
 /* ─── Types ─── */
 interface TimelineClip {
@@ -118,6 +120,10 @@ export default function Editor() {
   const trimClipMutation = trpc.clip.trim.useMutation();
   const splitClipMutation = trpc.clip.split.useMutation();
 
+  /* Undo/Redo */
+  const { push: pushUndo, undo: performUndo, redo: performRedo, canUndo, canRedo, clear: clearUndoHistory } = useUndoRedo(50);
+  const { generateWaveform, getWaveform, isGenerating } = useWaveform();
+
   /* Derived */
   const timelineClips: TimelineClip[] = (clips ?? []).map((c) => {
     const asset = (assets ?? []).find((a) => a.id === c.assetId);
@@ -129,6 +135,17 @@ export default function Editor() {
   });
 
   const totalDuration = computeTotalDuration(timelineClips);
+
+  /* Generate waveforms when assets are loaded */
+  useEffect(() => {
+    if (assets && assets.length > 0) {
+      for (const asset of assets) {
+        if (!isGenerating(asset.id) && getWaveform(asset.id).length === 0) {
+          generateWaveform(asset.id, asset.url);
+        }
+      }
+    }
+  }, [assets]);
   const activeClip = getActiveClip(timelineClips, currentTime);
 
   /* Upload handler */
@@ -299,6 +316,14 @@ export default function Editor() {
   /* Timeline clip operations */
   const handleClipDragEnd = async (clip: TimelineClip, newTimelineStart: number) => {
     if (!draggingClip) return;
+    const oldStart = clip.timelineStart;
+    pushUndo({
+      type: "move",
+      clipId: clip.id,
+      data: { timelineStart: Math.max(0, newTimelineStart) },
+      undo: { timelineStart: oldStart },
+      description: `Move clip`,
+    });
     await updateClipMutation.mutateAsync({
       id: clip.id,
       timelineStart: Math.max(0, newTimelineStart),
@@ -309,40 +334,82 @@ export default function Editor() {
   };
 
   const handleDeleteClip = async (clipId: number) => {
-    await deleteClipMutation.mutateAsync({ id: clipId });
-    await refetchClips();
-    toast.success("Clip deleted");
+    try {
+      const clip = timelineClips.find((c) => c.id === clipId);
+      pushUndo({
+        type: "delete",
+        clipId,
+        data: {},
+        undo: { timelineStart: clip?.timelineStart ?? 0 },
+        description: `Delete clip`,
+      });
+      await deleteClipMutation.mutateAsync({ id: clipId });
+      await refetchClips();
+      toast.success("Clip deleted");
+    } catch (err) {
+      toast.error("Failed to delete clip: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
   };
 
   const handleToggleMute = async (clip: TimelineClip) => {
-    await updateClipMutation.mutateAsync({ id: clip.id, muted: !clip.muted });
-    await refetchClips();
+    try {
+      await updateClipMutation.mutateAsync({ id: clip.id, muted: !clip.muted });
+      await refetchClips();
+    } catch (err) {
+      toast.error("Failed to update clip: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
   };
 
   const handleToggleVisibility = async (clip: TimelineClip) => {
-    await updateClipMutation.mutateAsync({ id: clip.id, visible: !clip.visible });
-    await refetchClips();
+    try {
+      await updateClipMutation.mutateAsync({ id: clip.id, visible: !clip.visible });
+      await refetchClips();
+    } catch (err) {
+      toast.error("Failed to update clip: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
   };
 
   const handleSplitClip = async (clip: TimelineClip, splitAt: number) => {
     if (splitAt <= 0 || splitAt >= clip.duration) return;
-    await splitClipMutation.mutateAsync({
-      id: clip.id,
-      splitAt,
-      projectId: projId,
-    });
-    await refetchClips();
-    toast.success("Clip split");
+    try {
+      pushUndo({
+        type: "split",
+        clipId: clip.id,
+        data: { splitAt },
+        undo: { sourceStart: clip.sourceStart, duration: clip.duration },
+        description: `Split clip`,
+      });
+      await splitClipMutation.mutateAsync({
+        id: clip.id,
+        splitAt,
+        projectId: projId,
+      });
+      await refetchClips();
+      toast.success("Clip split");
+    } catch (err) {
+      toast.error("Failed to split clip: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
   };
 
   const handleTrimClip = async (clip: TimelineClip, newSourceStart: number, newDuration: number) => {
-    await trimClipMutation.mutateAsync({
-      id: clip.id,
-      sourceStart: newSourceStart,
-      duration: newDuration,
-    });
-    await refetchClips();
-    toast.success("Clip trimmed");
+    try {
+      pushUndo({
+        type: "trim",
+        clipId: clip.id,
+        data: { sourceStart: newSourceStart, duration: newDuration },
+        undo: { sourceStart: clip.sourceStart, duration: clip.duration },
+        description: `Trim clip`,
+      });
+      await trimClipMutation.mutateAsync({
+        id: clip.id,
+        sourceStart: newSourceStart,
+        duration: newDuration,
+      });
+      await refetchClips();
+      toast.success("Clip trimmed");
+    } catch (err) {
+      toast.error("Failed to trim clip: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
   };
 
   /* Keyboard shortcuts */
@@ -366,6 +433,34 @@ export default function Editor() {
         handleSkipForward();
       } else if (e.code === "Home") {
         handleGoToStart();
+      } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ" && !e.shiftKey) {
+        e.preventDefault();
+        const action = performUndo();
+        if (action && action.clipId) {
+          // Apply the undo by reverting the clip to its previous state
+          updateClipMutation.mutateAsync({ id: action.clipId, ...action.undo } as any)
+            .then(() => { refetchClips(); toast.info(`Undone: ${action.description}`); })
+            .catch(() => { toast.error("Failed to undo"); });
+        } else {
+          toast.info(`Undone: ${action?.description || "unknown"}`);
+        }
+      } else if ((e.metaKey || e.ctrlKey) && (e.code === "KeyZ" && e.shiftKey || e.code === "KeyY")) {
+        e.preventDefault();
+        const action = performRedo();
+        if (action && action.clipId) {
+          // Apply the redo by reapplying the action
+          if (action.type === "move") {
+            updateClipMutation.mutateAsync({ id: action.clipId, timelineStart: action.data.timelineStart as number })
+              .then(() => { refetchClips(); toast.info(`Redone: ${action.description}`); })
+              .catch(() => { toast.error("Failed to redo"); });
+          } else if (action.type === "trim") {
+            trimClipMutation.mutateAsync({ id: action.clipId, sourceStart: action.data.sourceStart as number, duration: action.data.duration as number })
+              .then(() => { refetchClips(); toast.info(`Redone: ${action.description}`); })
+              .catch(() => { toast.error("Failed to redo"); });
+          }
+        } else {
+          toast.info(`Redone: ${action?.description || "unknown"}`);
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -761,24 +856,26 @@ export default function Editor() {
                             </button>
                           </div>
                         </div>
-                        {/* Waveform placeholder */}
+                        {/* Waveform */}
                         <div className="mx-1.5 mb-1.5 h-4 flex items-end gap-px">
-                          {Array.from(
-                            {
-                              length: Math.min(
-                                Math.floor((clip.duration * zoomLevel) / 3),
-                                80
-                              ),
-                            },
-                            (_, i) => (
+                          {isGenerating(clip.assetId) ? (
+                            <div className="flex-1 h-2 bg-orange-500/20 animate-pulse rounded" />
+                          ) : getWaveform(clip.assetId).length > 0 ? (
+                            getWaveform(clip.assetId).map((val, i) => (
                               <div
                                 key={i}
                                 className="flex-1 bg-orange-400/30 rounded-sm"
-                                style={{
-                                  height: `${20 + Math.random() * 80}%`,
-                                }}
+                                style={{ height: `${(val || 0.2) * 100}%` }}
                               />
-                            )
+                            ))
+                          ) : (
+                            Array.from({ length: Math.min(Math.floor(clip.duration * 10), 80) }, () => 0.3).map((val, i) => (
+                              <div
+                                key={i}
+                                className="flex-1 bg-gray-600/20 rounded-sm"
+                                style={{ height: `${val * 100}%` }}
+                              />
+                            ))
                           )}
                         </div>
                       </div>
