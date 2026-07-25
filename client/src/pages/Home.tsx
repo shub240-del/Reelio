@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollReveal } from "@/hooks/useScrollReveal";
+import { Link } from "wouter";
 
 /* ─── Asset URLs ─── */
 const DOG_ICON_SMALL = "/manus-storage/ruffcut-dog-icon-small_65d0c3ed.png";
@@ -255,22 +256,26 @@ export default function Home() {
                 Generate a clean rough draft in minutes.
               </p>
               <div className="flex flex-wrap gap-3 mb-5">
-                <Button
-                  size="lg"
-                  className="bg-orange-500 hover:bg-orange-600 text-white font-semibold px-6 gap-2 h-12 transition-all duration-200 active:scale-[0.97] hover:shadow-[0_4px_20px_rgba(249,115,22,0.25)]"
-                >
-                  <Play className="w-4 h-4" />
-                  Try Demo Project
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  className="bg-[#141420] border-white/10 text-white hover:bg-[#1e1e2e] gap-2 h-12 px-5 transition-all duration-200 active:scale-[0.97]"
-                >
-                  <FolderOpen className="w-4 h-4" />
-                  Open editor
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </Button>
+                <Link href="/projects">
+                  <Button
+                    size="lg"
+                    className="bg-orange-500 hover:bg-orange-600 text-white font-semibold px-6 gap-2 h-12 transition-all duration-200 active:scale-[0.97] hover:shadow-[0_4px_20px_rgba(249,115,22,0.25)]"
+                  >
+                    <Play className="w-4 h-4" />
+                    Try Demo Project
+                  </Button>
+                </Link>
+                <Link href="/projects">
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    className="bg-[#141420] border-white/10 text-white hover:bg-[#1e1e2e] gap-2 h-12 px-5 transition-all duration-200 active:scale-[0.97]"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    Open editor
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </Button>
+                </Link>
               </div>
               <p className="text-sm text-gray-500 flex items-center gap-1.5">
                 <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
@@ -421,12 +426,14 @@ export default function Home() {
                     Join Discord
                   </Button>
                 </a>
-                <Button
-                  size="lg"
-                  className="bg-orange-500 hover:bg-orange-600 text-white font-semibold h-11 px-6 transition-all duration-200 active:scale-[0.97] hover:shadow-[0_4px_20px_rgba(249,115,22,0.25)]"
-                >
-                  Start using now!
-                </Button>
+                <Link href="/projects">
+                  <Button
+                    size="lg"
+                    className="bg-orange-500 hover:bg-orange-600 text-white font-semibold h-11 px-6 transition-all duration-200 active:scale-[0.97] hover:shadow-[0_4px_20px_rgba(249,115,22,0.25)]"
+                  >
+                    Start using now!
+                  </Button>
+                </Link>
               </div>
             </div>
           </RevealSection>

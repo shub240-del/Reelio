@@ -1,0 +1,29 @@
+# Project TODO
+
+- [x] Audit existing codebase (Phase 1)
+- [x] Upgrade project to full-stack with database, auth, and file storage
+- [x] Create database schema for projects, assets, clips, timeline, and exports
+- [x] Implement project CRUD backend (create, list, get, delete)
+- [x] Implement video upload endpoint with S3 storage
+- [ ] Build video upload UI component with drag-and-drop
+- [ ] Implement video metadata extraction (duration, FPS, resolution)
+- [ ] Implement thumbnail generation from uploaded videos
+- [x] Build project list page with cards
+- [x] Build video editor page layout (preview panel, timeline, sidebar)
+- [x] Implement timeline data model (tracks, clips, playhead)
+- [x] Implement timeline UI with clip rendering
+- [ ] Implement clip trim functionality
+- [ ] Implement clip split functionality
+- [ ] Implement clip move/reorder on timeline
+- [x] Implement clip delete
+- [ ] Implement undo/redo system
+- [ ] Implement waveform generation and display
+- [x] Implement playback controls with timeline sync
+- [ ] Implement AI silence detection
+- [ ] Implement AI caption generation
+- [ ] Implement export rendering pipeline
+- [x] Implement project persistence and restore
+- [ ] Write tests for core functionality
+- [x] Add ownership validation to all asset and clip procedures
+- [ ] Fix timeline playback to use assembled timeline composition, not just first asset
+- [ ] Add user-facing error states for upload/delete failures
