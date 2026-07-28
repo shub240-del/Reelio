@@ -167,6 +167,14 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      // pnpm's symlinked dependency tree makes rollup open far more files at
+      // once than a hoisted node_modules does. On hosts with a 1024 fd limit
+      // that hits EMFILE, which rollup surfaces as a misleading "failed to
+      // resolve import" for a random module. Throttling keeps the build
+      // deterministic; the cost is negligible.
+      maxParallelFileOps: 4,
+    },
   },
   server: {
     host: true,
