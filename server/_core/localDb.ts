@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS markers (
   projectId INTEGER NOT NULL,
   time REAL NOT NULL,
   label TEXT,
-  color TEXT NOT NULL DEFAULT '#f97316',
+  color TEXT NOT NULL DEFAULT '#7c5cff',
   createdAt TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS captions (

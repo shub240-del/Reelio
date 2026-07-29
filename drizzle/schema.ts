@@ -89,7 +89,7 @@ export const markers = mysqlTable("markers", {
   projectId: int("projectId").notNull(),
   time: double("time").notNull(),
   label: varchar("label", { length: 256 }),
-  color: varchar("color", { length: 32 }).default("#f97316").notNull(),
+  color: varchar("color", { length: 32 }).default("#7c5cff").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

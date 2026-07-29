@@ -523,10 +523,10 @@ export default function Editor() {
     return (
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
         <div className="text-center">
-          <Scissors className="w-16 h-16 text-orange-500 mx-auto mb-6" />
+          <Scissors className="w-16 h-16 text-brand-500 mx-auto mb-6" />
           <h1 className="text-3xl font-bold text-white mb-4">Sign in to edit</h1>
           <Link href="/">
-            <Button className="bg-orange-500 hover:bg-orange-600 text-white h-11">
+            <Button className="bg-brand-500 hover:bg-brand-600 text-white h-11">
               Go to Home
             </Button>
           </Link>
@@ -547,7 +547,7 @@ export default function Editor() {
             </Button>
           </Link>
           <span className="text-white/80 font-medium text-sm">{project?.name || "Project"}</span>
-          <span className="text-orange-500 text-xs font-medium px-2 py-0.5 bg-orange-500/10 rounded-full">
+          <span className="text-brand-500 text-xs font-medium px-2 py-0.5 bg-brand-500/10 rounded-full">
             {project?.status || "draft"}
           </span>
         </div>
@@ -585,7 +585,7 @@ export default function Editor() {
             <option value={1.5}>1.5x</option>
             <option value={2}>2x</option>
           </select>
-          <Button size="sm" className="bg-orange-500 hover:bg-orange-600 text-white h-8 text-xs">
+          <Button size="sm" className="bg-brand-500 hover:bg-brand-600 text-white h-8 text-xs">
             Export
           </Button>
         </div>
@@ -620,17 +620,17 @@ export default function Editor() {
                 disabled={uploading}
                 className={`w-full h-20 border-2 border-dashed rounded-lg flex flex-col items-center justify-center gap-2 transition-colors ${
                   isDragOver
-                    ? "border-orange-500/50 bg-orange-500/5 text-orange-400"
-                    : "border-white/10 text-gray-500 hover:border-orange-500/30 hover:text-orange-400"
+                    ? "border-brand-500/50 bg-brand-500/5 text-brand-400"
+                    : "border-white/10 text-gray-500 hover:border-brand-500/30 hover:text-brand-400"
                 }`}
               >
                 {uploading ? (
                   <>
-                    <Loader2 className="w-5 h-5 animate-spin text-orange-500" />
+                    <Loader2 className="w-5 h-5 animate-spin text-brand-500" />
                     <span className="text-xs">Uploading {uploadProgress.toFixed(0)}%</span>
                     <div className="w-20 h-1 bg-white/10 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-orange-500 rounded-full transition-all"
+                        className="h-full bg-brand-500 rounded-full transition-all"
                         style={{ width: `${uploadProgress}%` }}
                       />
                     </div>
@@ -660,7 +660,7 @@ export default function Editor() {
                   className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.04] hover:border-white/10 transition-colors group"
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <FileVideo className="w-4 h-4 text-orange-500 flex-shrink-0" />
+                    <FileVideo className="w-4 h-4 text-brand-500 flex-shrink-0" />
                     <span className="text-xs text-white truncate">{asset.name}</span>
                   </div>
                   <div className="flex items-center gap-3 text-[10px] text-gray-500">
@@ -753,7 +753,7 @@ export default function Editor() {
                   <span className="text-xs text-white/80 font-mono">
                     {formatTime(currentTime)} / {formatTime(totalDuration)}
                   </span>
-                  <span className="text-[10px] text-orange-400 px-2 py-0.5 bg-orange-500/10 rounded-full">
+                  <span className="text-[10px] text-brand-400 px-2 py-0.5 bg-brand-500/10 rounded-full">
                     {playbackSpeed}x
                   </span>
                 </div>
@@ -794,7 +794,7 @@ export default function Editor() {
         >
           {/* Playhead indicator */}
           <div
-            className="absolute top-0 bottom-0 w-0.5 bg-orange-500 z-20"
+            className="absolute top-0 bottom-0 w-0.5 bg-brand-500 z-20"
             style={{ left: `${currentTime * zoomLevel}px` }}
           />
           {/* Time markers */}
@@ -820,7 +820,7 @@ export default function Editor() {
           >
             {/* Playhead line */}
             <div
-              className="absolute top-0 bottom-0 w-0.5 bg-orange-500 z-20 pointer-events-none"
+              className="absolute top-0 bottom-0 w-0.5 bg-brand-500 z-20 pointer-events-none"
               style={{ left: `${currentTime * zoomLevel}px` }}
             />
 
@@ -881,10 +881,10 @@ export default function Editor() {
                       <div
                         className={`w-full h-full rounded-md border transition-all ${
                           activeClip?.id === clip.id
-                            ? "bg-orange-500/20 border-orange-500/40 shadow-[0_0_12px_rgba(249,115,22,0.15)]"
+                            ? "bg-brand-500/20 border-brand-500/40 shadow-[0_0_12px_rgba(249,115,22,0.15)]"
                             : clip.locked
                             ? "bg-blue-500/10 border-blue-500/30"
-                            : "bg-orange-500/10 border-orange-500/20 hover:border-orange-500/40"
+                            : "bg-brand-500/10 border-brand-500/20 hover:border-brand-500/40"
                         }`}
                       >
                         <div className="p-1.5 flex items-center justify-between">
@@ -932,12 +932,12 @@ export default function Editor() {
                         {/* Waveform */}
                         <div className="mx-1.5 mb-1.5 h-4 flex items-end gap-px">
                           {isGenerating(clip.assetId) ? (
-                            <div className="flex-1 h-2 bg-orange-500/20 animate-pulse rounded" />
+                            <div className="flex-1 h-2 bg-brand-500/20 animate-pulse rounded" />
                           ) : getWaveform(clip.assetId).length > 0 ? (
                             getWaveform(clip.assetId).map((val, i) => (
                               <div
                                 key={i}
-                                className="flex-1 bg-orange-400/30 rounded-sm"
+                                className="flex-1 bg-brand-400/30 rounded-sm"
                                 style={{ height: `${(val || 0.2) * 100}%` }}
                               />
                             ))

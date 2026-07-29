@@ -258,7 +258,7 @@ export const appRouter = router({
         projectId: z.number(),
         time: z.number(),
         label: z.string().optional(),
-        color: z.string().default("#f97316"),
+        color: z.string().default("#7c5cff"),
       }))
       .mutation(async ({ input }) => {
         return createMarker(input);

@@ -4,6 +4,15 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* Reelio brand scale.
+     Declared as real theme colours, not arbitrary var() values, so opacity
+     modifiers like bg-brand-500/10 keep working - the editor leans on those
+     heavily for selection and hover states. */
+  --color-brand-400: var(--reelio-violet-hi);
+  --color-brand-500: var(--reelio-violet);
+  --color-brand-600: var(--reelio-violet-deep);
+  --color-brand-cyan: var(--reelio-cyan);
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -57,6 +66,8 @@
 :root {
   /* Brand */
   --reelio-violet: oklch(0.62 0.22 285); /* #7c5cff - primary actions, focus */
+  /* Pressed/hover step below the base violet. */
+  --reelio-violet-deep: oklch(0.52 0.23 285);
   --reelio-violet-hi: oklch(0.68 0.21 285); /* hover */
   --reelio-cyan: oklch(0.78 0.14 195); /* #22d3ee - secondary accent, data */
   --reelio-ink: oklch(0.1 0.012 275); /* page background */

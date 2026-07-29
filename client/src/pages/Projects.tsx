@@ -1,3 +1,4 @@
+import { ReelioLogo } from "@/components/brand/ReelioLogo";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +29,7 @@ export default function Projects() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-orange-500 animate-spin" />
+        <Loader2 className="w-8 h-8 text-brand-500 animate-spin" />
       </div>
     );
   }
@@ -37,10 +38,10 @@ export default function Projects() {
     return (
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
         <div className="text-center">
-          <Scissors className="w-16 h-16 text-orange-500 mx-auto mb-6" />
+          <Scissors className="w-16 h-16 text-brand-500 mx-auto mb-6" />
           <h1 className="text-3xl font-bold text-white mb-4">Sign in to Reelio</h1>
           <p className="text-gray-400 mb-6">Create and manage your video editing projects</p>
-          <a href="/" className="inline-flex items-center gap-2 px-6 py-3 bg-orange-500 text-white font-semibold rounded-lg hover:bg-orange-600 transition-colors">
+          <a href="/" className="inline-flex items-center gap-2 px-6 py-3 bg-brand-500 text-white font-semibold rounded-lg hover:bg-brand-600 transition-colors">
             Go to Home
           </a>
         </div>
@@ -54,17 +55,15 @@ export default function Projects() {
       <header className="border-b border-white/[0.06] bg-[#0a0a0f]/95 backdrop-blur-md sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <Link href="/">
-              <span className="text-[22px] font-bold text-white tracking-tight">
-                Ruff<span className="text-orange-500">Cut</span>
-              </span>
+            <Link href="/" aria-label="Reelio home">
+              <ReelioLogo size={28} />
             </Link>
             <span className="text-white/20">|</span>
             <span className="text-gray-400 font-medium">My Projects</span>
           </div>
           <Button
             onClick={() => setShowCreate(!showCreate)}
-            className="bg-orange-500 hover:bg-orange-600 text-white gap-2 h-10"
+            className="bg-brand-500 hover:bg-brand-600 text-white gap-2 h-10"
           >
             <Plus className="w-4 h-4" />
             New Project
@@ -94,7 +93,7 @@ export default function Projects() {
                 <Button
                   onClick={() => createMutation.mutate({ name: newName, description: newDesc })}
                   disabled={!newName.trim() || createMutation.isPending}
-                  className="bg-orange-500 hover:bg-orange-600 text-white h-10 gap-2"
+                  className="bg-brand-500 hover:bg-brand-600 text-white h-10 gap-2"
                 >
                   {createMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
                   Create Project
@@ -124,10 +123,10 @@ export default function Projects() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {projects.map((project) => (
               <Link key={project.id} href={`/editor/${project.id}`}>
-                <div className="group bg-[#141420] border border-white/[0.06] rounded-xl p-6 hover:border-orange-500/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_8px_40px_rgba(249,115,22,0.08)] cursor-pointer">
+                <div className="group bg-[#141420] border border-white/[0.06] rounded-xl p-6 hover:border-brand-500/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_8px_40px_rgba(249,115,22,0.08)] cursor-pointer">
                   <div className="flex items-start justify-between mb-4">
-                    <div className="w-12 h-12 rounded-xl bg-orange-500/10 flex items-center justify-center">
-                      <Film className="w-6 h-6 text-orange-500" />
+                    <div className="w-12 h-12 rounded-xl bg-brand-500/10 flex items-center justify-center">
+                      <Film className="w-6 h-6 text-brand-500" />
                     </div>
                     <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
                       project.status === "editing" ? "bg-blue-500/10 text-blue-400" :
@@ -137,7 +136,7 @@ export default function Projects() {
                       {project.status}
                     </span>
                   </div>
-                  <h3 className="text-lg font-semibold text-white mb-1 group-hover:text-orange-400 transition-colors">
+                  <h3 className="text-lg font-semibold text-white mb-1 group-hover:text-brand-400 transition-colors">
                     {project.name}
                   </h3>
                   {project.description && (
@@ -157,7 +156,7 @@ export default function Projects() {
             <p className="text-gray-400 mb-6">Create your first project to start editing</p>
             <Button
               onClick={() => setShowCreate(true)}
-              className="bg-orange-500 hover:bg-orange-600 text-white gap-2 h-11"
+              className="bg-brand-500 hover:bg-brand-600 text-white gap-2 h-11"
             >
               <Plus className="w-4 h-4" />
               Create Project

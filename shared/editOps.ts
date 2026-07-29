@@ -36,7 +36,7 @@ export type CaptionCue = z.infer<typeof captionCueSchema>;
 export const markerSchema = z.object({
   time: z.number().min(0),
   label: z.string().max(256).default(""),
-  color: z.string().max(32).default("#f97316"),
+  color: z.string().max(32).default("#7c5cff"),
 });
 export type MarkerSpec = z.infer<typeof markerSchema>;
 
