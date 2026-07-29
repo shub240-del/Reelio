@@ -27,6 +27,45 @@ export function useReducedMotion(): boolean {
   return reduced;
 }
 
+/* ────────────────────────── anchor availability ────────────────────────── */
+
+/**
+ * Filters in-page anchors down to the ones whose target actually exists.
+ *
+ * The nav and hero advertise sections by id. Hard-coding that list ships dead
+ * links whenever a section has not been built yet (it briefly shipped six of
+ * them), and a link that scrolls nowhere reads as a broken site. Resolving
+ * against the live DOM means the nav can only ever offer real destinations, and
+ * new sections light up on their own as they mount.
+ */
+export function useExistingAnchors(hrefs: readonly string[]): Set<string> {
+  const key = hrefs.join(",");
+  const [present, setPresent] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    const resolve = () => {
+      const found = hrefs.filter((h) => {
+        if (!h.startsWith("#")) return true; // real routes are not our business
+        const id = h.slice(1);
+        return id.length > 0 && document.getElementById(id) !== null;
+      });
+      setPresent((prev) => {
+        // Only swap the Set when membership really changed, so a MutationObserver
+        // firing on every scroll-reveal cannot loop us through renders forever.
+        if (prev.size === found.length && found.every((h) => prev.has(h))) return prev;
+        return new Set(found);
+      });
+    };
+    resolve();
+    const observer = new MutationObserver(resolve);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return present;
+}
+
 /**
  * Runs `tick` on every animation frame while the element is on screen.
  * Off-screen sections stop animating entirely, which is what keeps a page full

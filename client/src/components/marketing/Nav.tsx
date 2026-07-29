@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { Menu, X } from "lucide-react";
 import { ReelioLogo } from "@/components/brand/ReelioLogo";
+import { useExistingAnchors } from "./primitives";
 
 const LINKS = [
   { label: "Features", href: "#features" },
@@ -27,6 +28,11 @@ export function Nav() {
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<string>("");
+  // Only offer links whose section is actually on the page. Sections land over
+  // several milestones, and a nav link that scrolls nowhere reads as broken.
+  const available = useExistingAnchors(LINKS.map((l) => l.href));
+  const links = LINKS.filter((l) => available.has(l.href));
+  const availableKey = links.map((l) => l.href).join(",");
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -37,7 +43,7 @@ export function Nav() {
 
   // Highlight the section currently in view.
   useEffect(() => {
-    const ids = LINKS.map((l) => l.href.slice(1));
+    const ids = links.map((l) => l.href.slice(1));
     const sections = ids
       .map((id) => document.getElementById(id))
       .filter((el): el is HTMLElement => el !== null);
@@ -53,7 +59,7 @@ export function Nav() {
     );
     sections.forEach((s) => io.observe(s));
     return () => io.disconnect();
-  }, []);
+  }, [availableKey]);
 
   // Escape closes the mobile sheet; lock scroll while it is open.
   useEffect(() => {
@@ -93,7 +99,7 @@ export function Nav() {
           </Link>
 
           <ul className="hidden items-center gap-1 lg:flex">
-            {LINKS.map((link) => (
+            {links.map((link) => (
               <li key={link.href}>
                 <a
                   href={link.href}
@@ -122,6 +128,7 @@ export function Nav() {
             >
               Get started
             </Link>
+            {links.length > 0 ? (
             <button
               type="button"
               onClick={() => setOpen((v) => !v)}
@@ -132,16 +139,17 @@ export function Nav() {
             >
               {open ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
             </button>
+            ) : null}
           </div>
         </nav>
 
-        {open ? (
+        {open && links.length > 0 ? (
           <div
             id="mobile-menu"
             className="border-t border-white/[0.07] bg-[#0a0a0f]/95 backdrop-blur-xl lg:hidden"
           >
             <ul className="mx-auto flex max-w-[1200px] flex-col gap-1 px-5 py-4 sm:px-8">
-              {LINKS.map((link) => (
+              {links.map((link) => (
                 <li key={link.href}>
                   <a
                     href={link.href}

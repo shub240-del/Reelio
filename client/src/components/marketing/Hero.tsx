@@ -7,13 +7,15 @@
  */
 import { Link } from "wouter";
 import { ArrowRight, Play } from "lucide-react";
-import { Container, GlassCard, GradientText, Glow } from "./primitives";
+import { useExistingAnchors, Container, GlassCard, GradientText, Glow } from "./primitives";
 import { HeroDemo } from "./HeroDemo";
 
 /** Honest capability line — every claim maps to shipped import support. */
 const FACTS = ["MP4, MOV & WebM", "Runs in your browser", "Nothing to install"];
 
 export function Hero() {
+  // The demo section arrives in a later milestone; never offer a dead scroll.
+  const anchors = useExistingAnchors(["#features"]);
   return (
     <section className="relative overflow-hidden pt-32 pb-16 sm:pt-40 sm:pb-24" aria-label="Introduction">
       {/* Decorative background: CSS/SVG only, no raster art. */}
@@ -59,6 +61,7 @@ export function Hero() {
                   className="transition-transform duration-300 group-hover:translate-x-0.5 motion-reduce:transform-none"
                 />
               </Link>
+              {anchors.has("#features") ? (
               <a
                 href="#features"
                 className="reelio-focus inline-flex items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.03] px-5 py-3 text-[15px] font-semibold text-zinc-100 backdrop-blur transition-colors hover:border-white/[0.2] hover:bg-white/[0.06]"
@@ -66,6 +69,7 @@ export function Hero() {
                 <Play size={15} aria-hidden="true" />
                 See it work
               </a>
+              ) : null}
             </div>
 
             <ul className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-2">
