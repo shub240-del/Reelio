@@ -12,6 +12,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useReducedMotion } from "./primitives";
+import { demoState, formatClock, phaseAt, type Phase } from "./heroDemoState";
 
 /* ────────────────────────── deterministic source data ────────────────────────── */
 
@@ -67,38 +68,6 @@ const BARS = buildBars();
 const SILENT_COUNT = BARS.filter((b) => b.silent).length;
 const TOTAL_SECONDS = 760; // 12:40 of source footage
 const KEPT_RATIO = (BARS.length - SILENT_COUNT) / BARS.length;
-
-function formatClock(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-/* ────────────────────────── animation phases ────────────────────────── */
-
-const SCAN_MS = 2200;
-const HOLD_MS = 700;
-const COLLAPSE_MS = 1100;
-const SETTLE_MS = 2200;
-const CYCLE_MS = SCAN_MS + HOLD_MS + COLLAPSE_MS + SETTLE_MS;
-
-interface Phase {
-  scan: number; // 0..1 sweep progress
-  collapse: number; // 0..1 how far the silence is cut out
-}
-
-function phaseAt(elapsed: number): Phase {
-  const t = elapsed % CYCLE_MS;
-  if (t < SCAN_MS) return { scan: t / SCAN_MS, collapse: 0 };
-  if (t < SCAN_MS + HOLD_MS) return { scan: 1, collapse: 0 };
-  if (t < SCAN_MS + HOLD_MS + COLLAPSE_MS) {
-    const p = (t - SCAN_MS - HOLD_MS) / COLLAPSE_MS;
-    // easeInOutCubic keeps the collapse from feeling mechanical.
-    const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-    return { scan: 1, collapse: eased };
-  }
-  return { scan: 1, collapse: 1 };
-}
 
 /* ────────────────────────── component ────────────────────────── */
 
@@ -158,18 +127,8 @@ export function HeroDemo() {
   });
 
   const scanX = phase.scan * VIEW_W;
-  const remaining = TOTAL_SECONDS * (1 - (1 - KEPT_RATIO) * phase.collapse);
-  const cutSeconds = TOTAL_SECONDS - remaining;
-  const detecting = phase.scan < 1;
-  // The amount of dead air the pass will remove once the cut completes.
-  const targetCutSeconds = TOTAL_SECONDS * (1 - KEPT_RATIO);
-  // Naming the stage keeps the copy honest: during the hold the spans are only
-  // found, not yet removed, so the status line must not claim a cut has happened.
-  const stage: "scanning" | "found" | "cutting" = detecting
-    ? "scanning"
-    : phase.collapse <= 0.02
-      ? "found"
-      : "cutting";
+  const { stage, cutSeconds, remaining, targetCutSeconds } = demoState(phase, TOTAL_SECONDS, KEPT_RATIO);
+  const detecting = stage === "scanning";
 
   return (
     <div ref={hostRef} className="relative w-full">
@@ -211,7 +170,7 @@ export function HeroDemo() {
         viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
         className="w-full"
         role="img"
-        aria-label={`Audio waveform of a ${formatClock(TOTAL_SECONDS)} recording. Reelio detects ${SILENT_COUNT} silent spans and removes them, leaving ${formatClock(TOTAL_SECONDS * KEPT_RATIO)}.`}
+        aria-label={`Audio waveform of a ${formatClock(TOTAL_SECONDS)} recording. Reelio detects ${SILENT_COUNT} silent spans and removes them, leaving ${formatClock(TOTAL_SECONDS - targetCutSeconds)}.`}
       >
         <defs>
           <linearGradient id="reelio-wave" x1="0" y1="0" x2="0" y2="1">
