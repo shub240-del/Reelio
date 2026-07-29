@@ -2,6 +2,7 @@ import { trpc } from "@/lib/trpc";
 import { COOKIE_NAME, UNAUTHED_ERR_MSG } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, TRPCClientError } from "@trpc/client";
+import { hybridLink } from "@/guest/link";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
@@ -39,7 +40,11 @@ queryClient.getMutationCache().subscribe(event => {
 
 const trpcClient = trpc.createClient({
   links: [
-    httpBatchLink({
+    // Guest Mode: if no backend answers, the same calls are served from
+    // IndexedDB so the editor stays usable without an account.
+    hybridLink({
+      url: "/api/trpc",
+      cloud: httpBatchLink({
       url: "/api/trpc",
       transformer: superjson,
       headers() {
@@ -68,6 +73,7 @@ const trpcClient = trpc.createClient({
           credentials: "include",
         });
       },
+      }),
     }),
   ],
 });
