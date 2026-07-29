@@ -30,9 +30,12 @@ export function Nav() {
   const [active, setActive] = useState<string>("");
   // Only offer links whose section is actually on the page. Sections land over
   // several milestones, and a nav link that scrolls nowhere reads as broken.
+  // The full nav always renders: it is the page's primary structure and a
+  // half-empty header reads as a broken build. Anchor resolution is still used
+  // for section tracking, and to smooth-scroll only to targets that exist.
+  const links = LINKS;
   const available = useExistingAnchors(LINKS.map((l) => l.href));
-  const links = LINKS.filter((l) => available.has(l.href));
-  const availableKey = links.map((l) => l.href).join(",");
+  const availableKey = [...available].sort().join(",");
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -43,7 +46,7 @@ export function Nav() {
 
   // Highlight the section currently in view.
   useEffect(() => {
-    const ids = links.map((l) => l.href.slice(1));
+    const ids = [...available].map((h) => h.slice(1));
     const sections = ids
       .map((id) => document.getElementById(id))
       .filter((el): el is HTMLElement => el !== null);
@@ -128,7 +131,7 @@ export function Nav() {
             >
               Get started
             </Link>
-            {links.length > 0 ? (
+            {(
             <button
               type="button"
               onClick={() => setOpen((v) => !v)}
@@ -139,11 +142,11 @@ export function Nav() {
             >
               {open ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
             </button>
-            ) : null}
+            )}
           </div>
         </nav>
 
-        {open && links.length > 0 ? (
+        {open ? (
           <div
             id="mobile-menu"
             className="border-t border-white/[0.07] bg-[#0a0a0f]/95 backdrop-blur-xl lg:hidden"

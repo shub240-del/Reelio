@@ -15,7 +15,7 @@ const FACTS = ["MP4, MOV & WebM", "Runs in your browser", "Nothing to install"];
 
 export function Hero() {
   // The demo section arrives in a later milestone; never offer a dead scroll.
-  const anchors = useExistingAnchors(["#features"]);
+  const anchors = useExistingAnchors(["#hero-demo"]);
   return (
     <section className="relative overflow-hidden pt-32 pb-16 sm:pt-40 sm:pb-24" aria-label="Introduction">
       {/* Decorative background: CSS/SVG only, no raster art. */}
@@ -61,9 +61,9 @@ export function Hero() {
                   className="transition-transform duration-300 group-hover:translate-x-0.5 motion-reduce:transform-none"
                 />
               </Link>
-              {anchors.has("#features") ? (
+              {anchors.has("#hero-demo") ? (
               <a
-                href="#features"
+                href="#hero-demo"
                 className="reelio-focus inline-flex items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.03] px-5 py-3 text-[15px] font-semibold text-zinc-100 backdrop-blur transition-colors hover:border-white/[0.2] hover:bg-white/[0.06]"
               >
                 <Play size={15} aria-hidden="true" />
@@ -83,7 +83,10 @@ export function Hero() {
           </div>
 
           {/* Live demo */}
-          <GlassCard className="p-5 sm:p-7">
+          {/* Real scroll target for the hero's secondary CTA: "See it work"
+              takes you to the working demo rather than a section that does not
+              exist yet, and scroll-margin keeps the sticky header off it. */}
+          <GlassCard id="hero-demo" className="scroll-mt-24 p-5 sm:p-7">
             <div className="mb-5 flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">
                 Silence removal

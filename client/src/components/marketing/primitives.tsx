@@ -180,13 +180,17 @@ export function GlassCard({
   children,
   className = "",
   interactive = false,
+  id,
 }: {
   children: ReactNode;
   className?: string;
   interactive?: boolean;
+  /** Set when the card is a scroll target, so anchors can resolve to it. */
+  id?: string;
 }) {
   return (
     <div
+      id={id}
       className={[
         "relative overflow-hidden rounded-2xl border border-white/[0.08]",
         "bg-white/[0.02] backdrop-blur-xl",
