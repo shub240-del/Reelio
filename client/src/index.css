@@ -148,3 +148,74 @@
     }
   }
 }
+
+/* ────────────────────────── Reelio marketing surface ────────────────────────── */
+
+/*
+ * Accessibility floor: honour the OS reduced-motion setting globally.
+ * Individual components also branch on it, but this guarantees that any
+ * animation added later cannot bypass the preference.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Faint engineering grid, drawn in CSS rather than shipped as an image. */
+.reelio-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
+/* Masks a decorative layer so it fades out instead of ending on a hard edge. */
+.reelio-fade-mask {
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 40%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+
+/* Slow aurora drift behind the hero. Transform-only, so it stays off the main thread. */
+@keyframes reelio-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, -3%, 0) scale(1.08);
+  }
+}
+.reelio-drift {
+  animation: reelio-drift 18s ease-in-out infinite;
+  will-change: transform;
+}
+.reelio-drift-slow {
+  animation: reelio-drift 26s ease-in-out infinite reverse;
+  will-change: transform;
+}
+
+/* Sheen that sweeps a surface once on hover. */
+@keyframes reelio-sheen {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(220%);
+  }
+}
+.group:hover .reelio-sheen {
+  animation: reelio-sheen 900ms ease-out;
+}
+
+/* Focus ring: brand-coloured, always visible for keyboard users. */
+.reelio-focus:focus-visible {
+  outline: 2px solid var(--reelio-cyan);
+  outline-offset: 2px;
+  border-radius: 8px;
+}

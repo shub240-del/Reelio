@@ -38,7 +38,7 @@ export default function Projects() {
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
         <div className="text-center">
           <Scissors className="w-16 h-16 text-orange-500 mx-auto mb-6" />
-          <h1 className="text-3xl font-bold text-white mb-4">Sign in to RuffCut</h1>
+          <h1 className="text-3xl font-bold text-white mb-4">Sign in to Reelio</h1>
           <p className="text-gray-400 mb-6">Create and manage your video editing projects</p>
           <a href="/" className="inline-flex items-center gap-2 px-6 py-3 bg-orange-500 text-white font-semibold rounded-lg hover:bg-orange-600 transition-colors">
             Go to Home
