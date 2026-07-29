@@ -75,12 +75,31 @@ function getActiveClip(clips: TimelineClip[], time: number): TimelineClip | null
 /**
  * Compute the total timeline duration from all clips.
  */
+/**
+ * How long the ruler should read. Floored at 60s so an empty timeline still
+ * shows a usable scale - this is a DISPLAY value only.
+ */
 function computeTotalDuration(clips: TimelineClip[]): number {
   if (clips.length === 0) return 60;
   return Math.max(
     ...clips.map((c) => c.timelineStart + c.duration),
     60
   );
+}
+
+/**
+ * Where the actual content ends, with no display floor.
+ *
+ * Appending must use this, never computeTotalDuration: that one floors at 60s,
+ * so importing into an empty project dropped the first clip at t=60s, off the
+ * visible timeline. The import looked like it had silently failed - the asset
+ * appeared in the panel but the timeline stayed empty and the preview still
+ * said "Upload a video to get started".
+ */
+function timelineContentEnd(clips: TimelineClip[]): number {
+  let end = 0;
+  for (const clip of clips) end = Math.max(end, clip.timelineStart + clip.duration);
+  return end;
 }
 
 /* ─── Component ─── */
@@ -197,7 +216,7 @@ export default function Editor() {
             assetId: newAsset.id,
             sourceStart: 0,
             duration: newAsset.duration || 30,
-            timelineStart: totalDuration,
+            timelineStart: timelineContentEnd(timelineClips),
             sortIndex: timelineClips.length,
           });
           await refetchClips();
@@ -215,7 +234,7 @@ export default function Editor() {
         toast.error("Upload failed: " + (err instanceof Error ? err.message : "Unknown error"));
       }
     },
-    [projId, totalDuration, timelineClips.length]
+    [projId, timelineClips, timelineClips.length]
   );
 
   /* Video preview sync - when active clip changes, switch the video source */
