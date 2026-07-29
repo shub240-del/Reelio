@@ -43,40 +43,60 @@
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
+/*
+ * Reelio brand system.
+ *
+ * The single source of truth for Reelio's identity. The inherited palette was an
+ * orange (hue 60) on near-black, which is the signature of the product this
+ * codebase was originally cloned from. Reelio's accent is a violet-to-cyan pair:
+ * it reads as AI-first and premium, and is unmistakably not that other product.
+ *
+ * To retheme the entire application, change --reelio-violet and --reelio-cyan.
+ * Every surface, button, focus ring and chart derives from them.
+ */
 :root {
+  /* Brand */
+  --reelio-violet: oklch(0.62 0.22 285); /* #7c5cff - primary actions, focus */
+  --reelio-violet-hi: oklch(0.68 0.21 285); /* hover */
+  --reelio-cyan: oklch(0.78 0.14 195); /* #22d3ee - secondary accent, data */
+  --reelio-ink: oklch(0.1 0.012 275); /* page background */
+  --reelio-surface: oklch(0.145 0.012 275); /* cards */
+  --reelio-surface-hi: oklch(0.19 0.012 275); /* elevated / hover */
+  --reelio-hairline: oklch(1 0 0 / 8%); /* borders */
+
   --radius: 0.625rem;
-  --background: oklch(0.12 0.01 270);
+  --background: var(--reelio-ink);
   --foreground: oklch(0.95 0 0);
-  --card: oklch(0.16 0.01 270);
+  --card: var(--reelio-surface);
   --card-foreground: oklch(0.95 0 0);
-  --popover: oklch(0.16 0.01 270);
+  --popover: var(--reelio-surface);
   --popover-foreground: oklch(0.95 0 0);
-  --primary: oklch(0.72 0.18 60);
-  --primary-foreground: oklch(0.15 0.01 60);
-  --secondary: oklch(0.2 0.01 270);
+  --primary: var(--reelio-violet);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: var(--reelio-surface-hi);
   --secondary-foreground: oklch(0.8 0 0);
-  --muted: oklch(0.22 0.008 270);
+  --muted: var(--reelio-surface-hi);
   --muted-foreground: oklch(0.65 0 0);
-  --accent: oklch(0.2 0.01 270);
+  --accent: var(--reelio-surface-hi);
   --accent-foreground: oklch(0.95 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.25 0.01 270);
+  --border: var(--reelio-hairline);
   --input: oklch(0.25 0.01 270);
-  --ring: oklch(0.72 0.18 60);
-  --chart-1: oklch(0.72 0.18 60);
-  --chart-2: oklch(0.6 0.15 270);
+  --ring: var(--reelio-violet);
+  --chart-1: var(--reelio-violet);
+  --chart-2: var(--reelio-cyan);
   --chart-3: oklch(0.5 0.1 270);
   --chart-4: oklch(0.4 0.05 270);
   --chart-5: oklch(0.3 0.02 270);
-  --sidebar: oklch(0.14 0.01 270);
+  --sidebar: var(--reelio-surface);
   --sidebar-foreground: oklch(0.95 0 0);
-  --sidebar-primary: oklch(0.72 0.18 60);
-  --sidebar-primary-foreground: oklch(0.15 0.01 60);
+  --sidebar-primary: var(--reelio-violet);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
   --sidebar-accent: oklch(0.2 0.01 270);
   --sidebar-accent-foreground: oklch(0.95 0 0);
   --sidebar-border: oklch(0.25 0.01 270);
-  --sidebar-ring: oklch(0.72 0.18 60);
+  --sidebar-ring: var(--reelio-violet);
 }
 
 @layer base {
