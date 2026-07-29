@@ -282,6 +282,17 @@ async function clipCreate(input: {
   duration: number;
   timelineStart: number;
   sortIndex?: number;
+  /**
+   * Undo restores a deleted clip by re-creating it. Without the ability to ask
+   * for the original id, the restored clip would get a fresh one and the redo
+   * that follows would target a row that no longer exists. IndexedDB honours an
+   * explicit key on put even for autoIncrement stores, so history can round-trip
+   * exactly. Normal creates leave these unset.
+   */
+  id?: number;
+  locked?: boolean;
+  visible?: boolean;
+  muted?: boolean;
 }): Promise<GuestClip> {
   const existing = await clipList({ projectId: input.projectId });
   const row: Omit<GuestClip, "id"> & { id?: number } = {
@@ -293,11 +304,12 @@ async function clipCreate(input: {
     duration: input.duration,
     timelineStart: input.timelineStart,
     sortIndex: input.sortIndex ?? existing.length,
-    locked: false,
-    visible: true,
-    muted: false,
+    locked: input.locked ?? false,
+    visible: input.visible ?? true,
+    muted: input.muted ?? false,
     createdAt: now(),
   };
+  if (input.id !== undefined) row.id = input.id;
   await put("clips", row);
   return row as GuestClip;
 }

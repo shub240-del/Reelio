@@ -9,6 +9,7 @@ import {
   Loader2,
   Pause,
   Play,
+  Copy,
   Scissors,
   SkipBack,
   SkipForward,
@@ -19,10 +20,30 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useParams } from "wouter";
 import { toast } from "sonner";
-import { useUndoRedo } from "@/hooks/useUndoRedo";
+import { useTimelineHistory } from "@/editor/useTimelineHistory";
+import {
+  DragOrigin,
+  MIN_CLIP_DURATION,
+  applySnap,
+  dragToStart,
+  duplicateStart,
+  isDrag,
+  nextSelection,
+  reindexTrack,
+  resolveTrim,
+  snapCandidates,
+  splitOffset,
+} from "@/editor/interaction";
 import { useWaveform } from "@/hooks/useWaveform";
 import { AlertTriangle } from "lucide-react";
 
@@ -120,6 +141,17 @@ export default function Editor() {
   const [zoomLevel, setZoomLevel] = useState(60); // px per second
   const [draggingClip, setDraggingClip] = useState<number | null>(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  /**
+   * Real selection, independent of the playhead. The prototype highlighted
+   * whichever clip the playhead happened to be over and called that "selected",
+   * so no operation could be aimed at a clip without first seeking to it.
+   */
+  const [selectedClipIds, setSelectedClipIds] = useState<number[]>([]);
+  const [snapGuide, setSnapGuide] = useState<number | null>(null);
+  /** Live pixel offset of the clip being dragged, before it is committed. */
+  const [dragPreview, setDragPreview] = useState<{ id: number; start: number } | null>(null);
+  const [trimPreview, setTrimPreview] = useState<{ id: number; start: number; duration: number } | null>(null);
+  const [clipMenu, setClipMenu] = useState<{ clipId: number; x: number; y: number } | null>(null);
 
   /* Data fetching */
   const { data: project } = trpc.project.get.useQuery({ id: projId }, { enabled: !!user });
@@ -140,8 +172,51 @@ export default function Editor() {
   const trimClipMutation = trpc.clip.trim.useMutation();
   const splitClipMutation = trpc.clip.split.useMutation();
 
-  /* Undo/Redo */
-  const { push: pushUndo, undo: performUndo, redo: performRedo, canUndo, canRedo, clear: clearUndoHistory } = useUndoRedo(50);
+  /**
+   * Undo/Redo.
+   *
+   * The history reads the clip list through a ref because the derived
+   * timelineClips array below is rebuilt on every render; a snapshot taken from
+   * a captured copy would go stale between the edit and the undo.
+   */
+  const clipsRef = useRef<TimelineClip[]>([]);
+  const selectionRef = useRef<number[]>([]);
+  selectionRef.current = selectedClipIds;
+
+  const {
+    record: recordHistory,
+    undo: performUndo,
+    redo: performRedo,
+    clear: clearUndoHistory,
+    canUndo,
+    canRedo,
+    undoLabel,
+    redoLabel,
+  } = useTimelineHistory({
+    getClips: () => clipsRef.current,
+    getSelection: () => selectionRef.current,
+    setSelection: setSelectedClipIds,
+    createClip: (clip) =>
+      createClipMutation.mutateAsync({
+        projectId: projId,
+        assetId: clip.assetId,
+        trackId: clip.trackId,
+        trackType: clip.trackType,
+        sourceStart: clip.sourceStart,
+        duration: clip.duration,
+        timelineStart: clip.timelineStart,
+        sortIndex: clip.sortIndex,
+        // Restoring a deleted clip must reuse its id, otherwise the redo that
+        // follows would target a row that no longer exists.
+        id: clip.id,
+        locked: clip.locked,
+        visible: clip.visible,
+        muted: clip.muted,
+      } as any),
+    updateClip: (patch) => updateClipMutation.mutateAsync(patch as any),
+    deleteClip: (id) => deleteClipMutation.mutateAsync({ id }),
+    refetch: () => refetchClips(),
+  });
   const { generateWaveform, getWaveform, isGenerating } = useWaveform();
 
   /* Derived */
@@ -154,7 +229,13 @@ export default function Editor() {
     };
   });
 
+  // Keep the history's view of the timeline current; see clipsRef above.
+  clipsRef.current = timelineClips;
+
   const totalDuration = computeTotalDuration(timelineClips);
+  const selectedClips = timelineClips.filter((c) => selectedClipIds.includes(c.id));
+  const assetDurationOf = (assetId: number) =>
+    (assets ?? []).find((a) => a.id === assetId)?.duration ?? 0;
 
   /* Generate waveforms when assets are loaded */
   useEffect(() => {
@@ -167,6 +248,12 @@ export default function Editor() {
     }
   }, [assets]);
   const activeClip = getActiveClip(timelineClips, currentTime);
+  /**
+   * Split targets the selection, falling back to whatever sits under the
+   * playhead so the action still works before anything is selected.
+   */
+  const splitTargets = selectedClips.length ? selectedClips : activeClip ? [activeClip] : [];
+  const canSplit = splitTargets.some((c) => splitOffset(c, currentTime) !== null);
 
   /* Upload handler */
   const handleFileUpload = useCallback(
@@ -334,54 +421,173 @@ export default function Editor() {
   };
 
   /* Timeline clip operations */
-  const handleClipDragEnd = async (clip: TimelineClip, newTimelineStart: number) => {
-    if (!draggingClip) return;
-    const oldStart = clip.timelineStart;
+
+  /**
+   * Commits a move. `newTimelineStart` is already delta-derived and snapped by
+   * the drag controller, so this only persists it and repairs track ordering.
+   */
+  const handleClipMove = async (clip: TimelineClip, newTimelineStart: number) => {
     const newStart = Math.max(0, newTimelineStart);
+    if (Math.abs(newStart - clip.timelineStart) < 1e-6) return; // nothing moved
 
-    // Compute new sortIndex based on timeline position
-    const sortedClips = [...timelineClips].filter(c => c.trackType === clip.trackType).sort((a, b) => a.timelineStart - b.timelineStart);
-    const currentSortIndex = sortedClips.findIndex(c => c.id === clip.id);
-    const targetSortIndex = Math.max(0, Math.min(currentSortIndex + 1, sortedClips.length - 1));
+    recordHistory("Move clip");
+    await updateClipMutation.mutateAsync({ id: clip.id, timelineStart: newStart });
 
-    pushUndo({
-      type: "move",
-      clipId: clip.id,
-      data: { timelineStart: newStart, sortIndex: targetSortIndex },
-      undo: { timelineStart: oldStart, sortIndex: clip.sortIndex },
-      description: `Move clip`,
-    });
+    // sortIndex must follow left-to-right position, not an arbitrary increment.
+    const track = timelineClips
+      .filter((c) => c.trackType === clip.trackType)
+      .map((c) => (c.id === clip.id ? { ...c, timelineStart: newStart } : c));
+    for (const patch of reindexTrack(track)) {
+      await updateClipMutation.mutateAsync({ id: patch.id, sortIndex: patch.sortIndex });
+    }
 
-    await updateClipMutation.mutateAsync({
-      id: clip.id,
-      timelineStart: newStart,
-      sortIndex: targetSortIndex,
-    });
-    setDraggingClip(null);
     await refetchClips();
     toast.success("Clip moved");
   };
 
-  const handleDeleteClip = async (clipId: number) => {
+  /**
+   * Pointer-driven clip drag.
+   *
+   * Anchored on the pointer position at mousedown so the clip follows the
+   * cursor's delta. The previous version moved the clip's left edge to the
+   * cursor on mouseup, which teleported the clip on a plain click.
+   */
+  const beginClipDrag = (clip: TimelineClip, event: ReactMouseEvent) => {
+    const track = event.currentTarget.parentElement as HTMLDivElement | null;
+    if (!track) return;
+    const trackRect = track.getBoundingClientRect();
+    const origin: DragOrigin = {
+      clipId: clip.id,
+      startAt: clip.timelineStart,
+      pointerX: event.clientX - trackRect.left,
+    };
+    const candidates = snapCandidates(timelineClips, [clip.id], currentTime);
+    let latestStart = clip.timelineStart;
+    let moved = false;
+
+    const onMove = (e: MouseEvent) => {
+      const pointerX = e.clientX - trackRect.left;
+      if (!moved && !isDrag(origin, pointerX)) return;
+      moved = true;
+      setDraggingClip(clip.id);
+      const proposed = dragToStart(origin, pointerX, zoomLevel);
+      const snapped = applySnap(proposed, clip.duration, candidates, zoomLevel);
+      latestStart = snapped.start;
+      setSnapGuide(snapped.snappedTo);
+      setDragPreview({ id: clip.id, start: snapped.start });
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setDraggingClip(null);
+      setSnapGuide(null);
+      setDragPreview(null);
+      if (moved) void handleClipMove(clip, latestStart);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  /** Edge drag for trimming. Mirrors beginClipDrag but adjusts one edge. */
+  const beginTrimDrag = (clip: TimelineClip, edge: "start" | "end", event: ReactMouseEvent) => {
+    event.stopPropagation();
+    const startX = event.clientX;
+    const assetDuration = assetDurationOf(clip.assetId);
+    let result = { sourceStart: clip.sourceStart, duration: clip.duration, timelineStart: clip.timelineStart };
+    let moved = false;
+
+    const onMove = (e: MouseEvent) => {
+      const delta = (e.clientX - startX) / zoomLevel;
+      if (!moved && Math.abs(e.clientX - startX) < 3) return;
+      moved = true;
+      result = resolveTrim(clip, edge, delta, assetDuration);
+      setTrimPreview({ id: clip.id, start: result.timelineStart, duration: result.duration });
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setTrimPreview(null);
+      if (moved) void handleTrimClip(clip, result);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  /** Duplicates every selected clip, placing copies after their originals. */
+  const handleDuplicateClips = async (targets: TimelineClip[]) => {
+    if (targets.length === 0) return;
     try {
-      const clip = timelineClips.find((c) => c.id === clipId);
-      pushUndo({
-        type: "delete",
-        clipId,
-        data: {},
-        undo: { timelineStart: clip?.timelineStart ?? 0 },
-        description: `Delete clip`,
-      });
-      await deleteClipMutation.mutateAsync({ id: clipId });
+      recordHistory(targets.length > 1 ? `Duplicate ${targets.length} clips` : "Duplicate clip");
+      const newIds: number[] = [];
+      for (const clip of targets) {
+        const track = timelineClips.filter((c) => c.trackType === clip.trackType);
+        const created: any = await createClipMutation.mutateAsync({
+          projectId: projId,
+          assetId: clip.assetId,
+          trackId: clip.trackId,
+          trackType: clip.trackType,
+          sourceStart: clip.sourceStart,
+          duration: clip.duration,
+          timelineStart: duplicateStart(clip, track),
+          sortIndex: track.length,
+        } as any);
+        if (created?.id) newIds.push(created.id);
+      }
       await refetchClips();
-      toast.success("Clip deleted");
+      if (newIds.length) setSelectedClipIds(newIds); // select the copies
+      toast.success(targets.length > 1 ? `${targets.length} clips duplicated` : "Clip duplicated");
+    } catch (err) {
+      toast.error("Failed to duplicate: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
+  /** Splits the given clips at the playhead. */
+  const handleSplitAtPlayhead = async (targets: TimelineClip[]) => {
+    const splittable = targets
+      .map((clip) => ({ clip, offset: splitOffset(clip, currentTime) }))
+      .filter((c): c is { clip: TimelineClip; offset: number } => c.offset !== null);
+
+    if (splittable.length === 0) {
+      toast.error("Move the playhead inside a clip to split it");
+      return;
+    }
+    recordHistory(splittable.length > 1 ? `Split ${splittable.length} clips` : "Split clip");
+    try {
+      for (const { clip, offset } of splittable) {
+        await splitClipMutation.mutateAsync({ id: clip.id, splitAt: offset, projectId: projId });
+      }
+      await refetchClips();
+      toast.success(splittable.length > 1 ? `${splittable.length} clips split` : "Clip split");
+    } catch (err) {
+      toast.error("Failed to split clip: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
+  const handleDeleteClips = async (clipIds: number[]) => {
+    if (clipIds.length === 0) return;
+    try {
+      // A snapshot captures the whole row, so undo can re-create it verbatim.
+      // The old inverse-based history only stored timelineStart and could never
+      // bring a deleted clip back.
+      recordHistory(clipIds.length > 1 ? `Delete ${clipIds.length} clips` : "Delete clip");
+      for (const id of clipIds) await deleteClipMutation.mutateAsync({ id });
+      await refetchClips();
+      setSelectedClipIds([]);
+      toast.success(clipIds.length > 1 ? `${clipIds.length} clips deleted` : "Clip deleted");
     } catch (err) {
       toast.error("Failed to delete clip: " + (err instanceof Error ? err.message : "Unknown error"));
     }
   };
 
+  const handleDeleteClip = (clipId: number) => handleDeleteClips([clipId]);
+
   const handleToggleMute = async (clip: TimelineClip) => {
     try {
+      recordHistory(clip.muted ? "Unmute clip" : "Mute clip");
       await updateClipMutation.mutateAsync({ id: clip.id, muted: !clip.muted });
       await refetchClips();
     } catch (err) {
@@ -391,6 +597,7 @@ export default function Editor() {
 
   const handleToggleVisibility = async (clip: TimelineClip) => {
     try {
+      recordHistory(clip.visible ? "Hide clip" : "Show clip");
       await updateClipMutation.mutateAsync({ id: clip.id, visible: !clip.visible });
       await refetchClips();
     } catch (err) {
@@ -398,42 +605,32 @@ export default function Editor() {
     }
   };
 
-  const handleSplitClip = async (clip: TimelineClip, splitAt: number) => {
-    if (splitAt <= 0 || splitAt >= clip.duration) return;
-    try {
-      pushUndo({
-        type: "split",
-        clipId: clip.id,
-        data: { splitAt },
-        undo: { sourceStart: clip.sourceStart, duration: clip.duration },
-        description: `Split clip`,
-      });
-      await splitClipMutation.mutateAsync({
-        id: clip.id,
-        splitAt,
-        projectId: projId,
-      });
-      await refetchClips();
-      toast.success("Clip split");
-    } catch (err) {
-      toast.error("Failed to split clip: " + (err instanceof Error ? err.message : "Unknown error"));
-    }
-  };
 
-  const handleTrimClip = async (clip: TimelineClip, newSourceStart: number, newDuration: number) => {
+
+  const handleTrimClip = async (
+    clip: TimelineClip,
+    next: { sourceStart: number; duration: number; timelineStart: number },
+  ) => {
+    if (
+      Math.abs(next.sourceStart - clip.sourceStart) < 1e-6 &&
+      Math.abs(next.duration - clip.duration) < 1e-6 &&
+      Math.abs(next.timelineStart - clip.timelineStart) < 1e-6
+    ) {
+      return;
+    }
+    if (next.duration < MIN_CLIP_DURATION) return;
     try {
-      pushUndo({
-        type: "trim",
-        clipId: clip.id,
-        data: { sourceStart: newSourceStart, duration: newDuration },
-        undo: { sourceStart: clip.sourceStart, duration: clip.duration },
-        description: `Trim clip`,
-      });
+      recordHistory("Trim clip");
       await trimClipMutation.mutateAsync({
         id: clip.id,
-        sourceStart: newSourceStart,
-        duration: newDuration,
+        sourceStart: next.sourceStart,
+        duration: next.duration,
       });
+      // A left trim also shifts the clip on the timeline; clip.trim only covers
+      // the source window, so the position needs a separate write.
+      if (Math.abs(next.timelineStart - clip.timelineStart) > 1e-6) {
+        await updateClipMutation.mutateAsync({ id: clip.id, timelineStart: next.timelineStart });
+      }
       await refetchClips();
       toast.success("Clip trimmed");
     } catch (err) {
@@ -464,46 +661,49 @@ export default function Editor() {
         handleGoToStart();
       } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ" && !e.shiftKey) {
         e.preventDefault();
-        const action = performUndo();
-        if (action && action.clipId) {
-          if (action.type === "delete") {
-            // Undo delete: we can't truly restore a deleted clip, just notify
-            toast.info(`Undone: ${action.description}`);
-          } else {
-            updateClipMutation.mutateAsync({ id: action.clipId, ...action.undo } as any)
-              .then(() => { refetchClips(); toast.info(`Undone: ${action.description}`); })
-              .catch(() => { toast.error("Failed to undo"); });
-          }
-        } else {
-          toast.info(`Undone: ${action?.description || "unknown"}`);
-        }
-      } else if ((e.metaKey || e.ctrlKey) && (e.code === "KeyZ" && e.shiftKey || e.code === "KeyY")) {
+        void performUndo().then((label) => {
+          if (label) toast.info(`Undone: ${label}`);
+        });
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        ((e.code === "KeyZ" && e.shiftKey) || e.code === "KeyY")
+      ) {
         e.preventDefault();
-        const action = performRedo();
-        if (action && action.clipId) {
-          if (action.type === "move") {
-            updateClipMutation.mutateAsync({ id: action.clipId, timelineStart: action.data.timelineStart as number })
-              .then(() => { refetchClips(); toast.info(`Redone: ${action.description}`); })
-              .catch(() => { toast.error("Failed to redo"); });
-          } else if (action.type === "trim") {
-            trimClipMutation.mutateAsync({ id: action.clipId, sourceStart: action.data.sourceStart as number, duration: action.data.duration as number })
-              .then(() => { refetchClips(); toast.info(`Redone: ${action.description}`); })
-              .catch(() => { toast.error("Failed to redo"); });
-          } else if (action.type === "split") {
-            splitClipMutation.mutateAsync({ id: action.clipId, splitAt: action.data.splitAt as number, projectId: projId })
-              .then(() => { refetchClips(); toast.info(`Redone: ${action.description}`); })
-              .catch(() => { toast.error("Failed to redo"); });
-          } else if (action.type === "delete") {
-            toast.info(`Delete redo not yet supported`);
-          }
-        } else {
-          toast.info(`Redone: ${action?.description || "unknown"}`);
-        }
+        void performRedo().then((label) => {
+          if (label) toast.info(`Redone: ${label}`);
+        });
+      } else if (e.code === "KeyS" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        void handleSplitAtPlayhead(selectedClips.length ? selectedClips : activeClip ? [activeClip] : []);
+      } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyD") {
+        e.preventDefault();
+        void handleDuplicateClips(selectedClips);
+      } else if (e.code === "Delete" || e.code === "Backspace") {
+        e.preventDefault();
+        void handleDeleteClips(selectedClipIds);
+      } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyA") {
+        e.preventDefault();
+        setSelectedClipIds(timelineClips.map((c) => c.id));
+      } else if (e.code === "Escape") {
+        setSelectedClipIds([]);
+        setClipMenu(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isPlaying, currentTime, timelineClips, totalDuration, zoomLevel]);
+    // selectedClipIds and canUndo/canRedo must be in here: without them the
+    // handler closes over an empty selection and the shortcuts silently no-op.
+  }, [
+    isPlaying,
+    currentTime,
+    timelineClips,
+    totalDuration,
+    zoomLevel,
+    selectedClipIds,
+    activeClip?.id,
+    canUndo,
+    canRedo,
+  ]);
 
   /* Drag-and-drop on sidebar */
   const [isDragOver, setIsDragOver] = useState(false);
@@ -554,24 +754,85 @@ export default function Editor() {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1">
             <button
-              onClick={performUndo}
+              onClick={() => {
+                void performUndo().then((label) => {
+                  if (label) toast.info(`Undone: ${label}`);
+                });
+              }}
               disabled={!canUndo}
               className={`px-2 py-1 rounded text-xs border ${
                 canUndo ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20" : "border-white/5 text-gray-600 cursor-not-allowed"
               }`}
-              title="Undo (Ctrl+Z)"
+              title={undoLabel ? `Undo ${undoLabel} (Ctrl+Z)` : "Undo (Ctrl+Z)"}
             >
               ↩ Undo
             </button>
             <button
-              onClick={performRedo}
+              onClick={() => {
+                void performRedo().then((label) => {
+                  if (label) toast.info(`Redone: ${label}`);
+                });
+              }}
               disabled={!canRedo}
               className={`px-2 py-1 rounded text-xs border ${
                 canRedo ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20" : "border-white/5 text-gray-600 cursor-not-allowed"
               }`}
-              title="Redo (Ctrl+Shift+Z)"
+              title={redoLabel ? `Redo ${redoLabel} (Ctrl+Shift+Z)` : "Redo (Ctrl+Shift+Z)"}
             >
               ↪ Redo
+            </button>
+          </div>
+
+          {/*
+            Split and duplicate previously had no UI at all: split was hidden on
+            double-click and trim on right-click, both undiscoverable. They are
+            now first-class toolbar actions that report why they are unavailable.
+          */}
+          <div className="flex items-center gap-1">
+            <button
+              data-testid="split-clip"
+              onClick={() =>
+                handleSplitAtPlayhead(selectedClips.length ? selectedClips : activeClip ? [activeClip] : [])
+              }
+              disabled={!canSplit}
+              className={`px-2 py-1 rounded text-xs border flex items-center gap-1 ${
+                canSplit
+                  ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20"
+                  : "border-white/5 text-gray-600 cursor-not-allowed"
+              }`}
+              title={
+                canSplit
+                  ? "Split at playhead (S)"
+                  : "Move the playhead inside a clip to split it"
+              }
+            >
+              <Scissors className="w-3 h-3" /> Split
+            </button>
+            <button
+              data-testid="duplicate-clip"
+              onClick={() => handleDuplicateClips(selectedClips)}
+              disabled={selectedClips.length === 0}
+              className={`px-2 py-1 rounded text-xs border flex items-center gap-1 ${
+                selectedClips.length
+                  ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20"
+                  : "border-white/5 text-gray-600 cursor-not-allowed"
+              }`}
+              title={selectedClips.length ? "Duplicate (Ctrl+D)" : "Select a clip to duplicate"}
+            >
+              <Copy className="w-3 h-3" /> Duplicate
+            </button>
+            <button
+              data-testid="delete-clip"
+              onClick={() => handleDeleteClips(selectedClipIds)}
+              disabled={selectedClipIds.length === 0}
+              className={`px-2 py-1 rounded text-xs border flex items-center gap-1 ${
+                selectedClipIds.length
+                  ? "border-white/10 text-gray-300 hover:text-red-400 hover:border-red-400/30"
+                  : "border-white/5 text-gray-600 cursor-not-allowed"
+              }`}
+              title={selectedClipIds.length ? "Delete (Del)" : "Select a clip to delete"}
+            >
+              <Trash2 className="w-3 h-3" /> Delete
             </button>
           </div>
           <select
@@ -835,53 +1096,76 @@ export default function Editor() {
                   .map((clip) => (
                     <div
                       key={clip.id}
-                      className="absolute h-12 rounded-md overflow-hidden cursor-pointer group transition-opacity"
+                      data-testid={`clip-${clip.id}`}
+                      data-selected={selectedClipIds.includes(clip.id)}
+                      // Timeline state is mirrored onto the element so an
+                      // observer can assert the model (start/duration in
+                      // seconds) instead of inferring it from pixel offsets,
+                      // which silently change with zoom.
+                      data-clip-id={clip.id}
+                      data-clip-start={clip.timelineStart}
+                      data-clip-duration={clip.duration}
+                      data-clip-source-start={clip.sourceStart}
+                      className="absolute h-12 rounded-md overflow-hidden cursor-grab active:cursor-grabbing group transition-opacity"
                       style={{
-                        left: `${clip.timelineStart * zoomLevel}px`,
-                        width: `${clip.duration * zoomLevel}px`,
+                        // While dragging or trimming, follow the live preview so
+                        // the clip tracks the cursor instead of jumping on release.
+                        left: `${
+                          (trimPreview?.id === clip.id
+                            ? trimPreview.start
+                            : dragPreview?.id === clip.id
+                            ? dragPreview.start
+                            : clip.timelineStart) * zoomLevel
+                        }px`,
+                        width: `${
+                          (trimPreview?.id === clip.id ? trimPreview.duration : clip.duration) *
+                          zoomLevel
+                        }px`,
                         opacity: clip.visible ? 1 : 0.3,
                         zIndex: draggingClip === clip.id ? 50 : 10,
                       }}
                       onMouseDown={(e) => {
                         e.stopPropagation();
-                        setDraggingClip(clip.id);
+                        // Selecting must never mutate the timeline, so selection
+                        // happens on mousedown and movement is what starts a drag.
+                        setSelectedClipIds((current) =>
+                          nextSelection(current, clip.id, {
+                            ctrl: e.ctrlKey,
+                            meta: e.metaKey,
+                            shift: e.shiftKey,
+                          }),
+                        );
+                        beginClipDrag(clip, e);
                       }}
-                      onMouseUp={(e) => {
-                        if (draggingClip) {
-                          const rect = (
-                            e.currentTarget.parentElement as HTMLDivElement
-                          ).getBoundingClientRect();
-                          const x = e.clientX - rect.left;
-                          handleClipDragEnd(clip, x / zoomLevel);
-                        }
-                      }}
-                      onDoubleClick={() => {
-                        // Split at playhead position
-                        const playheadOffset =
-                          currentTime - clip.timelineStart;
-                        if (
-                          playheadOffset > 0 &&
-                          playheadOffset < clip.duration
-                        ) {
-                          handleSplitClip(clip, playheadOffset);
-                        }
-                      }}
+                      onDoubleClick={() => handleSplitAtPlayhead([clip])}
                       onContextMenu={(e) => {
                         e.preventDefault();
-                        // Show trim options via a quick dialog
-                        const playheadOffset = currentTime - clip.timelineStart;
-                        const trimFromStart = playheadOffset > 0 && playheadOffset < clip.duration
-                          ? playheadOffset
-                          : 0;
-                        if (trimFromStart > 0.1) {
-                          handleTrimClip(clip, clip.sourceStart + trimFromStart, clip.duration - trimFromStart);
-                        }
+                        e.stopPropagation();
+                        // Right-click used to destructively trim with no warning
+                        // and no way back. It now opens a menu of real actions.
+                        if (!selectedClipIds.includes(clip.id)) setSelectedClipIds([clip.id]);
+                        setClipMenu({ clipId: clip.id, x: e.clientX, y: e.clientY });
                       }}
                     >
+                      {/* Trim handles: the only discoverable way to trim. */}
+                      <div
+                        data-testid={`trim-start-${clip.id}`}
+                        onMouseDown={(e) => beginTrimDrag(clip, "start", e)}
+                        className="absolute left-0 top-0 h-full w-2 cursor-ew-resize z-20 bg-brand-400/0 hover:bg-brand-400/60"
+                        title="Drag to trim the start"
+                      />
+                      <div
+                        data-testid={`trim-end-${clip.id}`}
+                        onMouseDown={(e) => beginTrimDrag(clip, "end", e)}
+                        className="absolute right-0 top-0 h-full w-2 cursor-ew-resize z-20 bg-brand-400/0 hover:bg-brand-400/60"
+                        title="Drag to trim the end"
+                      />
                       <div
                         className={`w-full h-full rounded-md border transition-all ${
-                          activeClip?.id === clip.id
-                            ? "bg-brand-500/20 border-brand-500/40 shadow-[0_0_12px_rgba(249,115,22,0.15)]"
+                          selectedClipIds.includes(clip.id)
+                            ? "bg-brand-500/25 border-brand-400 ring-1 ring-brand-400 shadow-[0_0_12px_rgba(124,92,255,0.25)]"
+                            : activeClip?.id === clip.id
+                            ? "bg-brand-500/20 border-brand-500/40"
                             : clip.locked
                             ? "bg-blue-500/10 border-blue-500/30"
                             : "bg-brand-500/10 border-brand-500/20 hover:border-brand-500/40"
@@ -1014,6 +1298,84 @@ export default function Editor() {
           </div>
         </div>
       </div>
+
+      {/* Right-click actions for the clip under the cursor. */}
+      {clipMenu && (
+        <>
+          <div className="fixed inset-0 z-[90]" onMouseDown={() => setClipMenu(null)} />
+          <div
+            data-testid="clip-context-menu"
+            className="fixed z-[100] min-w-[176px] rounded-lg border border-white/10 bg-[#141420] py-1 shadow-xl"
+            style={{ left: clipMenu.x, top: clipMenu.y }}
+          >
+            {(() => {
+              const clip = timelineClips.find((c) => c.id === clipMenu.clipId);
+              if (!clip) return null;
+              const targets = selectedClipIds.includes(clip.id) ? selectedClips : [clip];
+              const splittable = splitOffset(clip, currentTime) !== null;
+              const item =
+                "w-full px-3 py-1.5 text-left text-xs text-gray-300 hover:bg-white/5 hover:text-white flex items-center gap-2 disabled:text-gray-600 disabled:hover:bg-transparent";
+              return (
+                <>
+                  <button
+                    data-testid="menu-split"
+                    className={item}
+                    disabled={!splittable}
+                    title={splittable ? "" : "Move the playhead inside this clip first"}
+                    onClick={() => {
+                      setClipMenu(null);
+                      void handleSplitAtPlayhead(targets);
+                    }}
+                  >
+                    <Scissors className="w-3 h-3" /> Split at playhead
+                  </button>
+                  <button
+                    data-testid="menu-duplicate"
+                    className={item}
+                    onClick={() => {
+                      setClipMenu(null);
+                      void handleDuplicateClips(targets);
+                    }}
+                  >
+                    <Copy className="w-3 h-3" /> Duplicate
+                  </button>
+                  <button
+                    className={item}
+                    onClick={() => {
+                      setClipMenu(null);
+                      void handleToggleMute(clip);
+                    }}
+                  >
+                    {clip.muted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                    {clip.muted ? "Unmute" : "Mute"}
+                  </button>
+                  <button
+                    className={item}
+                    onClick={() => {
+                      setClipMenu(null);
+                      void handleToggleVisibility(clip);
+                    }}
+                  >
+                    {clip.visible ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    {clip.visible ? "Hide" : "Show"}
+                  </button>
+                  <div className="my-1 h-px bg-white/10" />
+                  <button
+                    data-testid="menu-delete"
+                    className={`${item} hover:text-red-400`}
+                    onClick={() => {
+                      setClipMenu(null);
+                      void handleDeleteClips(targets.map((c) => c.id));
+                    }}
+                  >
+                    <Trash2 className="w-3 h-3" /> Delete
+                  </button>
+                </>
+              );
+            })()}
+          </div>
+        </>
+      )}
     </div>
   );
 }
