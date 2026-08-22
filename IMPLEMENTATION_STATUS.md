@@ -12,7 +12,7 @@ The media-upload workflow is browser-verified with real generated 3-second MP4s:
 
 The full test command exits non-zero: 9 server tests fail because the success-path suites require a live database. The failing suite output reports `Database not available` plus dependent assertions for CRUD and clip operations. Client/shared tests pass.
 
-The visible Export button was clicked, but it produced no download, status change, or output file. Source search also did not identify a concrete video encoding/export pipeline such as WebCodecs, FFmpeg/WASM, or MediaRecorder. Export should be classified BROKEN/UNKNOWN rather than REAL.
+The Export button now runs a real canvas/MediaRecorder renderer and was browser-verified on a real MP4 timeline: it produced a 24 KB VP9 WebM download that opened with a native video element and advanced playback to approximately 0.70s. Full export parity remains PARTIAL because the current output does not mix timeline audio, and trim/split/mute/gap/visibility output coverage plus exact duration metadata still require independent verification.
 
 ## Completed milestones
 
@@ -43,11 +43,11 @@ The visible Export button was clicked, but it produced no download, status chang
 | Authenticated project CRUD | PARTIAL | Server procedures and tests exist, but success-path tests require an unavailable database. |
 | S3/cloud upload | PARTIAL | Upload and storage code exist, but credentials and end-to-end upload were not verified. |
 | AI chat/edit agent | REAL / VERIFIED for the two required deterministic commands | The existing AIChatBox emits validated structured plans. “Remove the first 5 seconds” and “Remove silence” both mutate real persisted timeline state; silence removal was verified with a real WAV, including persisted audio fragments. Undo/Redo and refresh were verified. A model-backed planner is not yet present. |
-| Video export | BROKEN/UNKNOWN | Clicking the visible Export control produced no download or observable output; no concrete encoding pipeline was found. |
+| Video export | PARTIAL | A real canvas/MediaRecorder WebM renderer now consumes visible video timeline clips and produced a browser-downloadable, playable 24 KB VP9 output. Audio mixing, exact duration conformance, and the full edited-state export matrix remain unverified. |
 | Accessibility/SEO/branding | PARTIAL | Marketing commit includes metadata, focus, reduced-motion, and brand work; no formal accessibility audit was run. |
 
 ## Next milestone
-Complete the edited-timeline playback gate: make the real preview resume across the next-clip boundary, then browser-verify trim offsets, split segments, gaps, mute/visibility, and multiple clips. Only after playback passes should the existing structured AI edit-operation path be connected and browser-verified; export remains blocked until a real encoding/output pipeline exists.
+Complete the edited-timeline playback gate by browser-verifying trim offsets, split segments, gaps, mute/visibility, audio/video multiple clips, and boundaries. Then verify export against those edited states, add audio mixing if required, and resolve the nine server tests that currently require unavailable MySQL.
 
 ## Known technical debt
 
@@ -76,4 +76,4 @@ Browser-verified editing evidence includes right trim, left trim, split, explici
 
 The localized runtime fix guards preview and asset-sidebar media elements against empty URLs during the asynchronous asset-loading window. Focused tests and TypeScript checking pass after the fix. The current timeline classification is REAL / VERIFIED for click-select, intentional drag, both trim edges, split, delete, duplicate, Undo, and Redo. Image/audio timeline playback, full multi-track behavior, AI timeline execution, and export remain PARTIAL or UNKNOWN until independently browser-verified.
 
-Exact next milestone: close the remaining edited-timeline playback matrix for audio/video trims, splits, gaps, mute, visibility, and multiple tracks. Then investigate a real export pipeline; export remains BROKEN until browser-level output verification passes.
+Exact next milestone: browser-verify the full edited-timeline playback matrix, then export a deliberately trimmed/split timeline with a gap and hidden/muted states, verify output duration and edits, and add audio mixing if launch-level output requires it.

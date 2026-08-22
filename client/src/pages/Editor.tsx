@@ -182,6 +182,7 @@ export default function Editor() {
   const [clipMenu, setClipMenu] = useState<{ clipId: number; x: number; y: number } | null>(null);
   const [aiMessages, setAiMessages] = useState<Message[]>([]);
   const [aiLoading, setAiLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   /* Data fetching */
   const { data: project } = trpc.project.get.useQuery({ id: projId }, { enabled: !!user });
@@ -280,6 +281,83 @@ export default function Editor() {
     }
   }, [assets]);
   const activeClip = getActiveClip(timelineClips, currentTime);
+
+  const handleExport = async () => {
+    if (exporting || timelineClips.length === 0) return;
+    const videoClips = timelineClips.filter((clip) => clip.trackType === "video" && clip.visible !== false && clip.duration > 0);
+    if (videoClips.length === 0) {
+      toast.error("Add a visible video clip before exporting");
+      return;
+    }
+    const firstAsset = (assets ?? []).find((asset) => asset.id === videoClips[0].assetId);
+    if (!firstAsset?.url) {
+      toast.error("The video source is not available");
+      return;
+    }
+    setExporting(true);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = firstAsset.width || 1280;
+      canvas.height = firstAsset.height || 720;
+      const context = canvas.getContext("2d");
+      if (!context || typeof canvas.captureStream !== "function" || typeof MediaRecorder === "undefined") {
+        throw new Error("This browser does not support browser-side video export");
+      }
+      const stream = canvas.captureStream(30);
+      const chunks: Blob[] = [];
+      const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
+      recorder.ondataavailable = (event) => { if (event.data.size > 0) chunks.push(event.data); };
+      const stopped = new Promise<Blob>((resolve) => {
+        recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType }));
+      });
+      const source = document.createElement("video");
+      source.muted = true;
+      source.playsInline = true;
+      source.preload = "auto";
+      recorder.start(250);
+      const end = timelineContentEnd(timelineClips);
+      const frameMs = 1000 / 30;
+      for (let time = 0; time < end; time += 1 / 30) {
+        const clip = videoClips.find((candidate) => time >= candidate.timelineStart && time < candidate.timelineStart + candidate.duration);
+        context.fillStyle = "#000";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        if (clip) {
+          const asset = (assets ?? []).find((candidate) => candidate.id === clip.assetId);
+          if (asset?.url) {
+            if (source.src !== asset.url) {
+              source.src = asset.url;
+              await new Promise<void>((resolve, reject) => {
+                source.onloadedmetadata = () => resolve();
+                source.onerror = () => reject(new Error("A timeline source could not be decoded"));
+              });
+            }
+            source.currentTime = clip.sourceStart + (time - clip.timelineStart);
+            await new Promise<void>((resolve) => {
+              const done = () => { source.removeEventListener("seeked", done); resolve(); };
+              source.addEventListener("seeked", done, { once: true });
+              setTimeout(done, 1000);
+            });
+            context.drawImage(source, 0, 0, canvas.width, canvas.height);
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, frameMs));
+      }
+      recorder.stop();
+      const blob = await stopped;
+      if (blob.size === 0) throw new Error("Export produced an empty file");
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${project?.name || "reelio-export"}.webm`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success(`Exported ${Math.round(blob.size / 1024)} KB WebM`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const handleAISendMessage = async (content: string) => {
     setAiMessages((messages) => [...messages, { role: "user", content }]);
@@ -985,9 +1063,9 @@ export default function Editor() {
             <option value={1.5}>1.5x</option>
             <option value={2}>2x</option>
           </select>
-          <Button size="sm" className="bg-brand-500 hover:bg-brand-600 text-white h-8 text-xs">
-            Export
-          </Button>
+            <Button size="sm" onClick={handleExport} disabled={exporting} className="bg-brand-500 hover:bg-brand-600 text-white h-8 text-xs">
+             {exporting ? "Exporting…" : "Export"}
+            </Button>
         </div>
       </header>
 
