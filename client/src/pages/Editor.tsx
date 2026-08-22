@@ -49,6 +49,9 @@ import {
 import { useWaveform } from "@/hooks/useWaveform";
 import { isSupportedMedia, probeMedia } from "@/editor/media";
 import { AlertTriangle } from "lucide-react";
+import { AIChatBox, type Message } from "@/components/AIChatBox";
+import { applyEditOps, describePlan } from "../../../shared/editOps";
+import { planEditorRequest } from "@/editor/ai";
 
 /* ─── Types ─── */
 interface TimelineClip {
@@ -176,6 +179,8 @@ export default function Editor() {
   const [dragPreview, setDragPreview] = useState<{ id: number; start: number } | null>(null);
   const [trimPreview, setTrimPreview] = useState<{ id: number; start: number; duration: number } | null>(null);
   const [clipMenu, setClipMenu] = useState<{ clipId: number; x: number; y: number } | null>(null);
+  const [aiMessages, setAiMessages] = useState<Message[]>([]);
+  const [aiLoading, setAiLoading] = useState(false);
 
   /* Data fetching */
   const { data: project } = trpc.project.get.useQuery({ id: projId }, { enabled: !!user });
@@ -274,6 +279,76 @@ export default function Editor() {
     }
   }, [assets]);
   const activeClip = getActiveClip(timelineClips, currentTime);
+
+  const handleAISendMessage = async (content: string) => {
+    setAiMessages((messages) => [...messages, { role: "user", content }]);
+    setAiLoading(true);
+    try {
+      const plan = planEditorRequest(content, timelineClips);
+      const assetMap = new Map(
+        (assets ?? []).map((asset) => [asset.id, {
+          id: asset.id,
+          duration: asset.duration,
+          hasAudio: asset.hasAudio,
+          width: asset.width,
+          height: asset.height,
+          fps: asset.fps,
+        }]),
+      );
+      const result = applyEditOps(timelineClips, assetMap, plan.operations);
+      if (result.applied.some((operation) => operation.type === "removeRanges")) {
+        recordHistory("AI: Remove the first 5 seconds");
+        const nextIds = new Set(result.clips.map((clip) => clip.id));
+        for (const clip of timelineClips) {
+          if (!nextIds.has(clip.id)) await deleteClipMutation.mutateAsync({ id: clip.id });
+        }
+        for (const clip of result.clips) {
+          const previous = timelineClips.find((candidate) => candidate.id === clip.id);
+          if (previous) {
+            await updateClipMutation.mutateAsync({
+              id: clip.id,
+              sourceStart: clip.sourceStart,
+              duration: clip.duration,
+              timelineStart: clip.timelineStart,
+              sortIndex: clip.sortIndex,
+              trackId: clip.trackId,
+              locked: clip.locked,
+              visible: clip.visible,
+              muted: clip.muted,
+            });
+          } else {
+            await createClipMutation.mutateAsync({
+              projectId: projId,
+              assetId: clip.assetId,
+              trackId: clip.trackId,
+              trackType: clip.trackType,
+              sourceStart: clip.sourceStart,
+              duration: clip.duration,
+              timelineStart: clip.timelineStart,
+              sortIndex: clip.sortIndex,
+              locked: clip.locked,
+              visible: clip.visible,
+              muted: clip.muted,
+            } as any);
+          }
+        }
+        await refetchClips();
+      }
+      const detail = result.applied.length > 0 ? describePlan(plan) : plan.summary;
+      setAiMessages((messages) => [...messages, {
+        role: "assistant",
+        content: `${detail}${result.skipped.length ? `\n\nSkipped: ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`,
+      }]);
+    } catch (error) {
+      setAiMessages((messages) => [...messages, {
+        role: "assistant",
+        content: `I could not apply that edit: ${error instanceof Error ? error.message : "Unknown error"}`,
+      }]);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   /**
    * Split targets the selection, falling back to whatever sits under the
    * playhead so the action still works before anything is selected.
@@ -1012,7 +1087,6 @@ export default function Editor() {
                 onTimeUpdate={handlePreviewTimeUpdate}
                 onLoadedMetadata={handlePreviewLoadedMetadata}
                 onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
                 onEnded={() => {
                   // Move to the next clip in timeline order, skipping any gap.
                   // Looking up the next start rather than querying the exact boundary
@@ -1048,6 +1122,18 @@ export default function Editor() {
                 <p className="text-gray-600 text-sm mt-1">Supports MP4, MOV, WebM</p>
               </div>
             )}
+
+            <div className="absolute top-3 right-3 z-30 w-72">
+              <AIChatBox
+                messages={aiMessages}
+                onSendMessage={handleAISendMessage}
+                isLoading={aiLoading}
+                height={"280px"}
+                placeholder="Ask AI to edit this timeline..."
+                emptyStateMessage="Describe an edit to apply"
+                suggestedPrompts={["Remove the first 5 seconds."]}
+              />
+            </div>
 
             {/* Playback Controls Overlay */}
             {activeClip && (

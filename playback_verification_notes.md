@@ -12,3 +12,5 @@ Next diagnostic: inspect persisted timeline clip start/duration ordering and exe
 Recorded 2026-08-22.
 
 Additional browser result: after visible play from the start, the displayed playhead reached `00:03.00`; the main preview source changed to a different blob-backed video with `currentTime: 0` and `duration: 3`, proving the next clip mounted, but it was paused. This exposes an autoplay handoff race still to fix; multi-clip playback is currently PARTIAL, not fully verified.
+
+Final browser result after removing the preview pause-state race: after visible play, the displayed timeline reached `00:05.11 / 01:00.00`; the main preview reported `currentTime: 2.382`, `duration: 3`, `paused: false`, and a changed blob URL. This confirms automatic continuation into the second real clip for the persisted contiguous two-clip timeline. The broader trim/split/gap/mute/visibility matrix is still outstanding.

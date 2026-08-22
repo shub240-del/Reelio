@@ -8,7 +8,7 @@ The project is a TypeScript React/Vite application with an Express/tRPC server, 
 
 ## Current blockers
 
-The media-upload workflow is browser-verified with real generated 3-second MP4s: assets were accepted, metadata showed 3.00 seconds and 320x180, previews rendered, and timeline clips appeared. Guest persistence restored the assets and clips after refresh. The focused timeline operation matrix is recorded in `PHASE_3_TIMELINE_REPORT.md`. Edited preview playback advances on a real source and maps the playhead to media time; the next clip also mounts at the first boundary, but automatic resume across that boundary remains unverified and currently fails in the browser check because the next preview is paused. Trim/split/gap playback therefore remains PARTIAL, not complete.
+The media-upload workflow is browser-verified with real generated 3-second MP4s: assets were accepted, metadata showed 3.00 seconds and 320x180, previews rendered, and timeline clips appeared. Guest persistence restored the assets and clips after refresh. The focused timeline operation matrix is recorded in `PHASE_3_TIMELINE_REPORT.md`. Edited preview playback advances on a real source, maps the playhead to media time, and now automatically continues into the next real clip for the tested contiguous two-clip timeline. The broader trim/split/gap/mute/visibility matrix remains incomplete. The deterministic AI workflow is recorded in `PHASE_4_AI_EDIT_REPORT.md`: the required first-five-seconds command produced a validated structured operation, changed the persisted timeline, and passed browser undo, redo, and refresh checks. No real silence detector exists yet, so “Remove silence” remains UNKNOWN.
 
 The full test command exits non-zero: 9 server tests fail because the success-path suites require a live database. The failing suite output reports `Database not available` plus dependent assertions for CRUD and clip operations. Client/shared tests pass.
 
@@ -39,10 +39,10 @@ The visible Export button was clicked, but it produced no download, status chang
 | Shared timeline engine | REAL | Dedicated implementation with passing unit tests. |
 | Editor interaction/history utilities | REAL | Dedicated implementation and passing focused tests. |
 | Media probing and waveform/thumbnail utilities | REAL | Browser-side media module exists, focused tests pass, and a real MP4 upload produced metadata, preview, and a timeline clip in the browser. |
-| Guest/local persistence | PARTIAL/VERIFIED | The guest detector was repaired; project, asset, preview, and timeline clip restored after editor refresh. Post-edit multi-clip refresh remains incomplete. |
+| Guest/local persistence | PARTIAL/VERIFIED | The guest detector was repaired; project, assets, previews, and AI-mutated timeline clip state restore after editor refresh. Full final-workflow persistence remains incomplete. |
 | Authenticated project CRUD | PARTIAL | Server procedures and tests exist, but success-path tests require an unavailable database. |
 | S3/cloud upload | PARTIAL | Upload and storage code exist, but credentials and end-to-end upload were not verified. |
-| AI chat/edit agent | PARTIAL | AI chat and structured edit-operation modules exist; browser proof that a user request produces and applies timeline changes is absent. |
+| AI chat/edit agent | PARTIAL | The existing AIChatBox is connected to a validated deterministic `removeRanges` plan and real clip mutations; the required first-five-seconds command is browser-verified. A real silence-analysis planner and model-backed planner remain absent. |
 | Video export | BROKEN/UNKNOWN | Clicking the visible Export control produced no download or observable output; no concrete encoding pipeline was found. |
 | Accessibility/SEO/branding | PARTIAL | Marketing commit includes metadata, focus, reduced-motion, and brand work; no formal accessibility audit was run. |
 
@@ -76,4 +76,4 @@ Browser-verified editing evidence includes right trim, left trim, split, explici
 
 The localized runtime fix guards preview and asset-sidebar media elements against empty URLs during the asynchronous asset-loading window. Focused tests and TypeScript checking pass after the fix. The current timeline classification is REAL / VERIFIED for click-select, intentional drag, both trim edges, split, delete, duplicate, Undo, and Redo. Image/audio timeline playback, full multi-track behavior, AI timeline execution, and export remain PARTIAL or UNKNOWN until independently browser-verified.
 
-Exact next milestone: fix and browser-verify automatic resume at the next real clip boundary, then complete the trim/split/gap/mute/visibility/multiple-clip playback matrix. AI integration remains the milestone after playback passes; export remains BROKEN until a real output pipeline is implemented.
+Exact next milestone: implement and browser-verify real silence analysis as structured `removeRanges` operations, including undo/redo and refresh. Then investigate a real export pipeline; export remains BROKEN until browser-level output verification passes.
