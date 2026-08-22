@@ -88,13 +88,20 @@ export async function getProject(id: number, userId: number) {
   return result[0];
 }
 
-export async function updateProject(id: number, userId: number, name?: string, status?: string) {
+export async function updateProject(id: number, userId: number, name?: string, status?: string, description?: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const updateSet: Record<string, unknown> = {};
   if (name !== undefined) updateSet.name = name;
   if (status !== undefined) updateSet.status = status;
+  if (description !== undefined) updateSet.description = description;
   await db.update(projects).set(updateSet).where(and(eq(projects.id, id), eq(projects.userId, userId)));
+}
+
+export async function duplicateProject(id: number, userId: number, name?: string) {
+  const source = await getProject(id, userId);
+  if (!source) return undefined;
+  return createProject(userId, name ?? `${source.name} Copy`, source.description ?? undefined);
 }
 
 export async function deleteProject(id: number, userId: number) {

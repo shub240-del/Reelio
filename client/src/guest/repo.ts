@@ -12,7 +12,7 @@
  */
 import { clampClipToAsset, type TimelineClip } from "@shared/timeline";
 import { probeMedia } from "@/editor/media";
-import { blobUrl, del, delAllBy, get, getAllBy, getAll, put, putBlob } from "./db";
+import { blobUrl, del, delAllBy, get, getAllBy, getAll, getBlob, put, putBlob, revokeBlobUrl } from "./db";
 
 export interface GuestUser {
   id: number;
@@ -118,19 +118,62 @@ async function projectGet(input: { id: number }): Promise<GuestProject> {
   return (await get<GuestProject>("projects", input.id)) ?? notFound("Project");
 }
 
-async function projectUpdate(input: { id: number; name?: string; status?: string }): Promise<GuestProject> {
+async function projectUpdate(input: { id: number; name?: string; status?: string; description?: string }): Promise<GuestProject> {
   const row = (await get<GuestProject>("projects", input.id)) ?? notFound("Project");
   if (input.name !== undefined) row.name = input.name;
   if (input.status !== undefined) row.status = input.status as GuestProject["status"];
+  if (input.description !== undefined) row.description = input.description || null;
   row.updatedAt = now();
   await put("projects", row);
   return row;
 }
 
+async function projectDuplicate(input: { id: number; name?: string }): Promise<GuestProject> {
+  const source = (await get<GuestProject>("projects", input.id)) ?? notFound("Project");
+  const copy = await projectCreate({
+    name: input.name?.trim() || `${source.name} Copy`,
+    description: source.description ?? undefined,
+  });
+  const assets = await getAllBy<GuestAsset>("assets", "projectId", source.id);
+  const assetIdMap = new Map<number, number>();
+  for (const asset of assets) {
+    const nextKey = `guest/${copy.id}/${Date.now()}-${asset.name}`;
+    const blob = await getBlob(asset.storageKey);
+    if (blob) await putBlob(nextKey, blob);
+    const cloned: Omit<GuestAsset, "id"> & { id?: number } = {
+      ...asset,
+      id: undefined,
+      projectId: copy.id,
+      storageKey: blob ? nextKey : asset.storageKey,
+      url: blob ? `guest-blob:${nextKey}` : asset.url,
+      createdAt: now(),
+    };
+    await put("assets", cloned);
+    assetIdMap.set(asset.id, cloned.id!);
+  }
+  const clips = await getAllBy<GuestClip>("clips", "projectId", source.id);
+  for (const clip of clips) {
+    const cloned: Omit<GuestClip, "id"> & { id?: number } = {
+      ...clip,
+      id: undefined,
+      projectId: copy.id,
+      assetId: assetIdMap.get(clip.assetId) ?? clip.assetId,
+      createdAt: now(),
+    };
+    await put("clips", cloned);
+  }
+  return copy;
+}
+
 async function projectDelete(input: { id: number }): Promise<{ success: true }> {
-  // Cascade by hand: IndexedDB has no foreign keys, and orphaned clips would
-  // resurface as invisible timeline entries in the next project to reuse an id.
+  // Cascade by hand: IndexedDB has no foreign keys. Remove media bytes too so
+  // deleting a project does not leave orphaned blobs consuming local quota.
+  const assets = await getAllBy<GuestAsset>("assets", "projectId", input.id);
   await delAllBy("clips", "projectId", input.id);
+  for (const asset of assets) {
+    revokeBlobUrl(asset.storageKey);
+    await del("blobs", asset.storageKey);
+  }
   await delAllBy("assets", "projectId", input.id);
   await del("projects", input.id);
   return { success: true };
@@ -469,6 +512,7 @@ export const guestProcedures: Record<string, Handler> = {
   "project.list": projectList,
   "project.get": projectGet,
   "project.update": projectUpdate,
+  "project.duplicate": projectDuplicate,
   "project.delete": projectDelete,
 
   "asset.list": assetList,

@@ -14,6 +14,7 @@ import {
   deleteClip,
   deleteMarker,
   deleteProject,
+  duplicateProject,
   getAsset,
   getAssetCaptions,
   getClip,
@@ -61,10 +62,17 @@ export const appRouter = router({
         return project;
       }),
     update: protectedProcedure
-      .input(z.object({ id: z.number(), name: z.string().optional(), status: z.string().optional() }))
+      .input(z.object({ id: z.number(), name: z.string().optional(), status: z.string().optional(), description: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
-        await updateProject(input.id, ctx.user.id, input.name, input.status);
+        await updateProject(input.id, ctx.user.id, input.name, input.status, input.description);
         return { success: true };
+      }),
+    duplicate: protectedProcedure
+      .input(z.object({ id: z.number(), name: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await duplicateProject(input.id, ctx.user.id, input.name);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+        return project;
       }),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
