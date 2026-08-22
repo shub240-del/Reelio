@@ -287,7 +287,7 @@ export default function Editor() {
     try {
       let silenceRanges: { start: number; end: number }[] = [];
       if (/^remove silence\.?$/i.test(content.trim())) {
-        const audioAsset = (assets ?? []).find((asset) => asset.hasAudio && asset.url);
+        const audioAsset = (assets ?? []).find((asset) => asset.url && (asset.hasAudio || asset.mimeType.startsWith("audio/")));
         if (audioAsset) silenceRanges = await detectSilenceRanges(audioAsset.url);
       }
       const plan = planEditorRequest(content, timelineClips, silenceRanges);

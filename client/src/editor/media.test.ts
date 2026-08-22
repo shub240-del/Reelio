@@ -167,6 +167,14 @@ describe("isSupportedMedia", () => {
     expect(isSupportedMedia({ name: "clip.MOV", type: "" })).toBe(true);
   });
 
+  it("accepts wav audio by mime type", () => {
+    expect(isSupportedMedia({ name: "a.wav", type: "audio/wav" })).toBe(true);
+  });
+
+  it("accepts mp3 audio by extension when mime type is empty", () => {
+    expect(isSupportedMedia({ name: "a.mp3", type: "" })).toBe(true);
+  });
+
   it("rejects an image", () => {
     expect(isSupportedMedia({ name: "a.png", type: "image/png" })).toBe(false);
   });

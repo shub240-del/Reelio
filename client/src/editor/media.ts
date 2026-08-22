@@ -17,10 +17,20 @@ export const SUPPORTED_MIME_TYPES = [
   "video/quicktime", // .mov
   "video/webm",
   "video/x-matroska", // .mkv, plays where webm codecs are supported
+  "audio/mpeg",
+  "audio/wav",
+  "audio/wave",
+  "audio/x-wav",
+  "audio/ogg",
+  "audio/webm",
+  "audio/mp4",
 ] as const;
 
 /** Extensions accepted when a browser reports an empty or generic MIME type. */
-export const SUPPORTED_EXTENSIONS = [".mp4", ".m4v", ".mov", ".webm", ".mkv"] as const;
+export const SUPPORTED_EXTENSIONS = [
+  ".mp4", ".m4v", ".mov", ".webm", ".mkv",
+  ".mp3", ".wav", ".ogg", ".m4a", ".aac",
+] as const;
 
 export interface MediaProbe {
   duration: number;

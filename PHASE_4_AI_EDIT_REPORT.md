@@ -15,14 +15,14 @@ This milestone connected the existing `AIChatBox` to the existing shared `editPl
 | Undo AI edit | **REAL / VERIFIED** | Undo toast showed `Undone: AI: Remove the first 5 seconds`; both original clips returned. |
 | Redo AI edit | **REAL / VERIFIED** | Redo toast showed `Redone: AI: Remove the first 5 seconds`; the shortened timeline returned. |
 | Refresh persistence | **REAL / VERIFIED** | After reload, the DOM showed the shortened clip with `duration=1`, `sourceStart=2`, and `start=0`. |
-| Remove silence | **PARTIAL** | A real browser-side PCM silence detector now exists and is wired to the structured `removeRanges` planner. In the persisted test project, both real MP4s report no audio track, so the browser correctly returned `No decodable silent spans were detected in the timeline audio` and made no fake mutation. A real audio-bearing fixture has not yet been browser-verified. |
+| Remove silence | **REAL / VERIFIED** | A real 2.79-second WAV containing two silent spans was imported through the existing asset manager. The AI response reported `Remove 2 spans (1.2s)`; the live timeline DOM showed the surviving clip at `duration=0.4`, `sourceStart=2.6`, `start=0`; Undo restored the prior state, Redo restored the edit, and refresh preserved the audio asset and edited timeline state. |
 
 ## Regression checks
 
-`pnpm check` passes and the focused editor/shared suite passes with 182/182 tests. The deterministic planner is in `client/src/editor/ai.ts`; editor integration is in `client/src/pages/Editor.tsx`.
+`pnpm check` passes and the focused editor/shared suite passes with 186/186 tests. The deterministic planner is in `client/src/editor/ai.ts`; editor integration is in `client/src/pages/Editor.tsx`.
 
 ## Exact next milestone
 
-Browser-verify the new silence-analysis path with a real audio-bearing fixture, including detected ranges, validated `removeRanges`, undo/redo, refresh, and preview behavior. Only then proceed to real export.
+Complete the broader playback matrix for audio/video trims, splits, gaps, mute, visibility, and multiple tracks. Then investigate a real export pipeline; export remains BROKEN until browser-level output verification passes.
 
 **Prepared 2026-08-22.**
