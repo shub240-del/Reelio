@@ -28,7 +28,7 @@ The score reflects a usable landing-to-editor guest workflow with real media imp
 | Undo | VERIFIED for delete operation | Yes; `Undone: Delete clip` appeared and the removed clip returned |
 | Redo | VERIFIED for delete operation | Yes; `Redone: Delete clip` appeared and the clip was removed again |
 | Persistence | PARTIAL/VERIFIED for project, asset, and clip restoration | Yes; the duplicated clips were restored after a clean editor refresh; full post-edit matrix remains incomplete |
-| AI Editing | PARTIAL/UNVERIFIED | No proof of structured operation application to the timeline |
+| AI Editing | PARTIAL/UNVERIFIED | `AIChatBox` and shared edit-operation schemas exist, but the inspected `Editor.tsx` has no AI chat/router callback or edit-plan application path; no browser mutation proof exists |
 | Export | BROKEN/UNKNOWN | Clicking Export produced no observable output |
 | Downloaded MP4 | NOT AVAILABLE | No file was generated |
 
@@ -48,7 +48,7 @@ A direct automated click on the visible clip once produced a `Clip moved` toast 
 
 ## What is still unverified
 
-Split and intentional move now have direct browser evidence. Split changed the trimmed 1.5s clip into approximately 0.5s and 1.0s segments with distinct source/timeline starts. An explicit drag moved the second segment from approximately 1.167s to 2.167s. Both trim edges have direct browser evidence, including history and left-trim persistence; delete, duplicate, undo, and redo also have direct browser evidence. A separate browser automation click produced a small unintended shift and should receive a clean real-user retest. Playback was verified for a real source, but gaps, clip boundaries, source offsets, mute/visibility, and exact timeline synchronization were not all tested. The AI chat component and edit-operation contract exist, but no browser test proved the complete chain from user request to validated operation, timeline mutation, persistence, and undo/redo.
+Split and intentional move now have direct browser evidence. Split changed the trimmed 1.5s clip into approximately 0.5s and 1.0s segments with distinct source/timeline starts. An explicit drag moved the second segment from approximately 1.167s to 2.167s. Both trim edges have direct browser evidence, including history and left-trim persistence; delete, duplicate, undo, and redo also have direct browser evidence. A separate browser automation click produced a small unintended shift and should receive a clean real-user retest. Playback was verified for a real source, but gaps, clip boundaries, source offsets, mute/visibility, and exact timeline synchronization were not all tested. The AI chat component and edit-operation contract exist, but the inspected editor has no connected AI chat/router callback or edit-plan application path; no browser test proved the complete chain from user request to validated operation, timeline mutation, persistence, and undo/redo.
 
 ## Exact next milestone
 
