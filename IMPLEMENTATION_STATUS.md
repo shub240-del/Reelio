@@ -28,7 +28,7 @@ The visible Export button was clicked, but it produced no download, status chang
 - Repaired guest-mode detection in `client/src/guest/link.ts` so a valid `auth.me` response containing `null` selects guest mode.
 - Reverified Landing → Get Started → `/projects` → Create Project in guest mode.
 - Reverified opening `/editor/1` and refreshing the editor route with the locally persisted project intact.
-- Prepared a real 3-second MP4 fixture; browser upload targeting remains blocked by the automation layer’s hidden-input mapping.
+- Prepared and browser-verified a real 3-second MP4 upload through the existing file-input handler; metadata, preview, timeline insertion, playback, and post-refresh restoration were observed.
 
 ## Module classification
 
@@ -38,17 +38,16 @@ The visible Export button was clicked, but it produced no download, status chang
 | React/Vite application shell | REAL | Local development server and production build succeed. |
 | Shared timeline engine | REAL | Dedicated implementation with passing unit tests. |
 | Editor interaction/history utilities | REAL | Dedicated implementation and passing focused tests. |
-| Media probing and waveform/thumbnail utilities | REAL | Browser-side media module exists and focused tests pass; full upload workflow not browser-verified. |
-| Guest/local persistence | PARTIAL | IndexedDB guest repository and hybrid link exist, but an unauthenticated request receiving 401 redirected to sign-in instead of entering guest mode. |
+| Media probing and waveform/thumbnail utilities | REAL | Browser-side media module exists, focused tests pass, and a real MP4 upload produced metadata, preview, and a timeline clip in the browser. |
+| Guest/local persistence | PARTIAL/VERIFIED | The guest detector was repaired; project, asset, preview, and timeline clip restored after editor refresh. Post-edit multi-clip refresh remains incomplete. |
 | Authenticated project CRUD | PARTIAL | Server procedures and tests exist, but success-path tests require an unavailable database. |
 | S3/cloud upload | PARTIAL | Upload and storage code exist, but credentials and end-to-end upload were not verified. |
 | AI chat/edit agent | PARTIAL | AI chat and structured edit-operation modules exist; browser proof that a user request produces and applies timeline changes is absent. |
-| Video export | UNKNOWN | No verified browser export flow and no clear concrete encoding pipeline found in the inspected source references. |
+| Video export | BROKEN/UNKNOWN | Clicking the visible Export control produced no download or observable output; no concrete encoding pipeline was found. |
 | Accessibility/SEO/branding | PARTIAL | Marketing commit includes metadata, focus, reduced-motion, and brand work; no formal accessibility audit was run. |
 
 ## Next milestone
-
-Implement or repair the unauthenticated guest-mode route/fallback so `/projects` can create and reopen a local project without OAuth or cloud credentials, then verify the critical browser flow through upload and timeline editing.
+Complete a clean browser operation matrix for clip selection, intentional move, trim, split, delete, duplicate, undo, redo, and post-edit persistence. Do not claim full editor readiness until each operation has browser evidence; leave AI and export classified as partial/broken unless their real end-to-end workflows are proven.
 
 ## Known technical debt
 
@@ -63,6 +62,6 @@ The current package manager emitted a warning that the `pnpm` field in `package.
 | 2026-08-22 | Local baseline | `pnpm test` FAIL: 9 server tests blocked by unavailable database; client/shared suites pass. |
 | 2026-08-22 | Local browser | Landing page PASS; initial `/projects` guest entry FAIL because sign-in gate was shown. |
 | 2026-08-22 | Local browser after fix | Landing → Get Started → guest projects → create project → editor → refresh PASS. |
-| 2026-08-22 | Commit `9e76541` | Guest-mode detector repair and `IMPLEMENTATION_STATUS.md` committed locally; not pushed. |
-| 2026-08-22 | Local browser after upload | Real MP4 accepted, preview/timeline created, and asset/clip restored after editor refresh. |
+| 2026-08-22 | Commit `8b06525` | Guest-mode detector repair and `IMPLEMENTATION_STATUS.md` committed locally; not pushed. |
+| 2026-08-22 | Local browser after upload | Real MP4 accepted, metadata/preview/timeline created, playback advanced, and asset/clip restored after editor refresh. |
 | 2026-08-22 | Local browser editor operations | Direct clip click caused an unintended move to approximately 0.167s; Export click produced no observable output. |
