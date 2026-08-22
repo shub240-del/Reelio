@@ -8,7 +8,7 @@ The project is a TypeScript React/Vite application with an Express/tRPC server, 
 
 ## Current blockers
 
-The media-upload workflow is now browser-verified with a real generated 3-second MP4: the asset was accepted, metadata showed 3.00 seconds and 320x180, a preview rendered, and a timeline clip appeared. Direct file-upload automation initially could not target the hidden input, so the same existing input change handler was exercised with a real File object from the browser console. Playback advanced to approximately 1 second, confirming a playable source. A subsequent editor refresh restored the asset, preview, and timeline clip from guest persistence. Full trim/split/move/delete/duplicate/undo/redo browser coverage remains incomplete. A direct browser click on the visible clip produced a `Clip moved` toast and changed its start from 0 to approximately 0.167 seconds, so plain-click selection/movement should be treated as BROKEN or at least requiring a focused interaction fix despite the existing drag-threshold code and unit tests.
+The media-upload workflow is browser-verified with real generated 3-second MP4s: assets were accepted, metadata showed 3.00 seconds and 320x180, previews rendered, and timeline clips appeared. Guest persistence restored the assets and clips after refresh. The focused timeline operation matrix is recorded in `PHASE_3_TIMELINE_REPORT.md`. Edited preview playback advances on a real source and maps the playhead to media time; the next clip also mounts at the first boundary, but automatic resume across that boundary remains unverified and currently fails in the browser check because the next preview is paused. Trim/split/gap playback therefore remains PARTIAL, not complete.
 
 The full test command exits non-zero: 9 server tests fail because the success-path suites require a live database. The failing suite output reports `Database not available` plus dependent assertions for CRUD and clip operations. Client/shared tests pass.
 
@@ -47,7 +47,7 @@ The visible Export button was clicked, but it produced no download, status chang
 | Accessibility/SEO/branding | PARTIAL | Marketing commit includes metadata, focus, reduced-motion, and brand work; no formal accessibility audit was run. |
 
 ## Next milestone
-Complete a clean browser operation matrix for clip selection, intentional move, trim, split, delete, duplicate, undo, redo, and post-edit persistence. Do not claim full editor readiness until each operation has browser evidence; leave AI and export classified as partial/broken unless their real end-to-end workflows are proven.
+Complete the edited-timeline playback gate: make the real preview resume across the next-clip boundary, then browser-verify trim offsets, split segments, gaps, mute/visibility, and multiple clips. Only after playback passes should the existing structured AI edit-operation path be connected and browser-verified; export remains blocked until a real encoding/output pipeline exists.
 
 ## Known technical debt
 
@@ -65,6 +65,7 @@ The current package manager emitted a warning that the `pnpm` field in `package.
 | 2026-08-22 | Commit `8b06525` | Guest-mode detector repair and `IMPLEMENTATION_STATUS.md` committed locally; not pushed. |
 | 2026-08-22 | Local browser after upload | Real MP4 accepted, metadata/preview/timeline created, playback advanced, and asset/clip restored after editor refresh. |
 | 2026-08-22 | Local browser editor operations | Direct clip click caused an unintended move to approximately 0.167s; Export click produced no observable output. |
+| 2026-08-22 | Local browser playback continuation | Real preview advanced and mapped timeline time; next clip mounted at 00:03.00 but remained paused. Playback boundary handoff is PARTIAL. TypeScript, focused tests (182/182), and production build passed. |
 
 
 ## Timeline verification continuation — 2026-08-22
@@ -75,4 +76,4 @@ Browser-verified editing evidence includes right trim, left trim, split, explici
 
 The localized runtime fix guards preview and asset-sidebar media elements against empty URLs during the asynchronous asset-loading window. Focused tests and TypeScript checking pass after the fix. The current timeline classification is REAL / VERIFIED for click-select, intentional drag, both trim edges, split, delete, duplicate, Undo, and Redo. Image/audio timeline playback, full multi-track behavior, AI timeline execution, and export remain PARTIAL or UNKNOWN until independently browser-verified.
 
-Exact next milestone: browser-verify edited-timeline playback across trim, split, gaps, mute, visibility, and multiple clips, then connect and verify the existing structured AI edit-operation path before assessing export.
+Exact next milestone: fix and browser-verify automatic resume at the next real clip boundary, then complete the trim/split/gap/mute/visibility/multiple-clip playback matrix. AI integration remains the milestone after playback passes; export remains BROKEN until a real output pipeline is implemented.

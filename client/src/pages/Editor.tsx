@@ -206,6 +206,7 @@ export default function Editor() {
    */
   const clipsRef = useRef<TimelineClip[]>([]);
   const selectionRef = useRef<number[]>([]);
+  const autoplayNextRef = useRef(false);
   selectionRef.current = selectedClipIds;
 
   const {
@@ -374,12 +375,19 @@ export default function Editor() {
   useEffect(() => {
     if (activeClip && previewVideoRef.current) {
       const video = previewVideoRef.current;
-      const sourceTime = currentTime - activeClip.timelineStart + activeClip.sourceStart;
-      if (Math.abs(video.currentTime - sourceTime) > 0.5) {
+      const sourceTime = Math.max(
+        activeClip.sourceStart,
+        currentTime - activeClip.timelineStart + activeClip.sourceStart
+      );
+      if (Math.abs(video.currentTime - sourceTime) > 0.05) {
         video.currentTime = sourceTime;
       }
+      // If playback was already running, resume after the new source loads.
+      if (isPlaying && video.paused) {
+        void video.play().catch(() => setIsPlaying(false));
+      }
     }
-  }, [activeClip?.id, currentTime]);
+  }, [activeClip?.id, currentTime, isPlaying]);
 
   /* Video time sync from preview video */
   const handlePreviewTimeUpdate = () => {
@@ -392,7 +400,11 @@ export default function Editor() {
   const handlePreviewLoadedMetadata = () => {
     if (!activeClip || !previewVideoRef.current) return;
     previewVideoRef.current.currentTime =
-      currentTime - activeClip.timelineStart + activeClip.sourceStart;
+      Math.max(activeClip.sourceStart, currentTime - activeClip.timelineStart + activeClip.sourceStart);
+    if (autoplayNextRef.current) {
+      autoplayNextRef.current = false;
+      void previewVideoRef.current.play().catch(() => setIsPlaying(false));
+    }
   };
 
   const togglePlay = () => {
@@ -993,25 +1005,35 @@ export default function Editor() {
             {activeClip?.assetUrl ? (
               <video
                 ref={previewVideoRef}
-                key={activeClip.id}
                 src={activeClip.assetUrl}
+                muted={!((assets ?? []).find((asset) => asset.id === activeClip.assetId)?.hasAudio)}
+                playsInline
                 className="max-w-full max-h-full object-contain"
                 onTimeUpdate={handlePreviewTimeUpdate}
                 onLoadedMetadata={handlePreviewLoadedMetadata}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
                 onEnded={() => {
-                  setIsPlaying(false);
-                  // Move to next clip in timeline
-                  const nextClip = getActiveClip(
-                    timelineClips,
-                    activeClip.timelineStart + activeClip.duration
-                  );
-                  if (nextClip) {
+                  // Move to the next clip in timeline order, skipping any gap.
+                  // Looking up the next start rather than querying the exact boundary
+                  // prevents a gap from being mistaken for end-of-timeline.
+                  const nextClip = [...timelineClips]
+                    .filter((clip) => clip.timelineStart > activeClip.timelineStart)
+                    .sort((a, b) => a.timelineStart - b.timelineStart)[0];
+                  if (nextClip?.assetUrl) {
+                    const nextVideo = previewVideoRef.current;
+                    autoplayNextRef.current = true;
                     setCurrentTime(nextClip.timelineStart);
-                    previewVideoRef.current!.src = nextClip.assetUrl;
-                    previewVideoRef.current!.currentTime = nextClip.sourceStart;
-                    previewVideoRef.current!.play();
+                    if (nextVideo) {
+                      nextVideo.src = nextClip.assetUrl;
+                      nextVideo.currentTime = nextClip.sourceStart;
+                      nextVideo.addEventListener(
+                        "loadedmetadata",
+                        () => void nextVideo.play().catch(() => setIsPlaying(false)),
+                        { once: true }
+                      );
+                      nextVideo.load();
+                    }
                   } else {
                     // End of timeline
                     setCurrentTime(totalDuration);
