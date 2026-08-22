@@ -15,11 +15,11 @@ This milestone connected the existing `AIChatBox` to the existing shared `editPl
 | Undo AI edit | **REAL / VERIFIED** | Undo toast showed `Undone: AI: Remove the first 5 seconds`; both original clips returned. |
 | Redo AI edit | **REAL / VERIFIED** | Redo toast showed `Redone: AI: Remove the first 5 seconds`; the shortened timeline returned. |
 | Refresh persistence | **REAL / VERIFIED** | After reload, the DOM showed the shortened clip with `duration=1`, `sourceStart=2`, and `start=0`. |
-| Remove silence | **REAL / VERIFIED** | A real 2.79-second WAV containing two silent spans was imported through the existing asset manager. The AI response reported `Remove 2 spans (1.2s)`; the live timeline DOM showed the surviving clip at `duration=0.4`, `sourceStart=2.6`, `start=0`; Undo restored the prior state, Redo restored the edit, and refresh preserved the audio asset and edited timeline state. |
+| Remove silence | **REAL / VERIFIED** | A real 2.79-second WAV containing two silent spans was imported through the existing asset manager. The AI response reported `Remove 2 spans (1.2s)`; the live timeline showed two surviving audio fragments (`0.8s` each, source offsets `0.6s` and `2.0s`, timeline starts `0.0s` and `0.8s`); refresh preserved both persisted fragment rows in IndexedDB. The verification also fixed standalone-audio `hasAudio` metadata and a stale asset-query race that previously dropped fragments. |
 
 ## Regression checks
 
-`pnpm check` passes and the focused editor/shared suite passes with 186/186 tests. The deterministic planner is in `client/src/editor/ai.ts`; editor integration is in `client/src/pages/Editor.tsx`.
+`pnpm check` passes and the focused editor/shared suite passes with 186/186 tests; the production build also passes after the audio persistence fix. The deterministic planner is in `client/src/editor/ai.ts`; editor integration is in `client/src/pages/Editor.tsx`.
 
 ## Exact next milestone
 

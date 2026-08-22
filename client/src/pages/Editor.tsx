@@ -285,14 +285,15 @@ export default function Editor() {
     setAiMessages((messages) => [...messages, { role: "user", content }]);
     setAiLoading(true);
     try {
+      const latestAssets = (await refetchAssets()).data ?? assets ?? [];
       let silenceRanges: { start: number; end: number }[] = [];
       if (/^remove silence\.?$/i.test(content.trim())) {
-        const audioAsset = (assets ?? []).find((asset) => asset.url && (asset.hasAudio || asset.mimeType.startsWith("audio/")));
+        const audioAsset = latestAssets.find((asset) => asset.url && (asset.hasAudio || asset.mimeType.startsWith("audio/")));
         if (audioAsset) silenceRanges = await detectSilenceRanges(audioAsset.url);
       }
       const plan = planEditorRequest(content, timelineClips, silenceRanges);
       const assetMap = new Map(
-        (assets ?? []).map((asset) => [asset.id, {
+        latestAssets.map((asset) => [asset.id, {
           id: asset.id,
           duration: asset.duration,
           hasAudio: asset.hasAudio,
@@ -408,7 +409,7 @@ export default function Editor() {
       setUploadProgress(0);
       let progressInterval: ReturnType<typeof setInterval> | undefined;
       try {
-        let metadata = { duration: 0, width: 0, height: 0, fps: 0, hasAudio: false };
+        let metadata = { duration: 0, width: 0, height: 0, fps: 0, hasAudio: isAudio };
         if (isVideo) metadata = await probeMedia(file);
         else if (isImage) {
           const image = await probeImage(file);

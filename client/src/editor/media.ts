@@ -272,10 +272,46 @@ function detectAudio(video: HTMLVideoElement): boolean {
   return false;
 }
 
+/** Loads a standalone audio file through the browser's native media decoder. */
+function loadAudioElement(src: string): Promise<HTMLAudioElement> {
+  return new Promise((resolve, reject) => {
+    const audio = document.createElement("audio");
+    audio.preload = "auto";
+    const onLoaded = () => { cleanup(); resolve(audio); };
+    const onError = () => { cleanup(); reject(new Error("This audio file could not be decoded by the browser")); };
+    const cleanup = () => {
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("error", onError);
+    };
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("error", onError);
+    audio.src = src;
+  });
+}
+
 /** Full probe of an imported file. Every field is measured, not guessed. */
 export async function probeMedia(file: File): Promise<MediaProbe> {
   const url = URL.createObjectURL(file);
   try {
+    if (file.type.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|aac)$/i.test(file.name)) {
+      const audio = await loadAudioElement(url);
+      const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      audio.src = "";
+      return {
+        duration,
+        width: 0,
+        height: 0,
+        fps: 0,
+        fpsConfident: false,
+        aspectRatio: 0,
+        aspectLabel: "—",
+        hasAudio: true,
+        mimeType: file.type || "audio/wav",
+        sizeBytes: file.size,
+        name: file.name,
+      };
+    }
+
     const video = await loadVideoElement(url);
     const duration = await resolveDuration(video);
     const width = video.videoWidth;
