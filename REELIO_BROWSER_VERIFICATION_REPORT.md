@@ -21,8 +21,8 @@ The score reflects a usable landing-to-editor guest workflow with real media imp
 | Timeline | REAL | Yes |
 | Playback | VERIFIED for uploaded source | Yes, play advanced; pause/seek/timeline-boundary coverage incomplete |
 | Trim | VERIFIED for both edges and history | Yes; right trim reduced 3s to 2s with Undo/Redo, and left trim changed source start 0→0.5s, duration 2s→1.5s, and timeline start 0.167→0.667s; the left-trimmed state also survived refresh |
-| Split | UNVERIFIED | No complete browser proof |
-| Move | PARTIAL | A duplicate operation moved successfully; plain-click behavior needs a clean-session retest because an automated visible click produced an unintended ~0.167s shift |
+| Split | VERIFIED for selected clip | Yes; the 1.5s clip split into segments of approximately 0.5s and 1.0s with distinct source and timeline starts |
+| Move | VERIFIED for intentional drag; click artifact noted | Yes for an explicit drag; the second split segment moved from approximately 1.167s to 2.167s. A separate browser automation click produced an unintended ~0.167s shift and should receive a clean real-user retest |
 | Delete | VERIFIED for selected clip | Yes; the second clip was deleted and disappeared from the timeline |
 | Duplicate | VERIFIED for visible timeline mutation and refresh persistence | Yes; second clip appeared, `Clip duplicated` was shown, and both clips were restored after editor refresh |
 | Undo | VERIFIED for delete operation | Yes; `Undone: Delete clip` appeared and the removed clip returned |
@@ -48,11 +48,11 @@ A direct automated click on the visible clip once produced a `Clip moved` toast 
 
 ## What is still unverified
 
-The full browser sequence for split and intentional move was not completed. Both trim edges now have direct browser evidence: right trim changed 3s to 2s with Undo/Redo, while left trim changed source start 0→0.5s, duration 2s→1.5s, and timeline start 0.167→0.667s; the left-trimmed state survived refresh. Delete, duplicate, undo, and redo also have direct browser evidence, including duplicate restoration after a clean editor refresh. Playback was verified for a real source, but gaps, clip boundaries, source offsets, mute/visibility, and exact timeline synchronization were not all tested. The AI chat component and edit-operation contract exist, but no browser test proved the complete chain from user request to validated operation, timeline mutation, persistence, and undo/redo.
+Split and intentional move now have direct browser evidence. Split changed the trimmed 1.5s clip into approximately 0.5s and 1.0s segments with distinct source/timeline starts. An explicit drag moved the second segment from approximately 1.167s to 2.167s. Both trim edges have direct browser evidence, including history and left-trim persistence; delete, duplicate, undo, and redo also have direct browser evidence. A separate browser automation click produced a small unintended shift and should receive a clean real-user retest. Playback was verified for a real source, but gaps, clip boundaries, source offsets, mute/visibility, and exact timeline synchronization were not all tested. The AI chat component and edit-operation contract exist, but no browser test proved the complete chain from user request to validated operation, timeline mutation, persistence, and undo/redo.
 
 ## Exact next milestone
 
-Complete a clean browser operation matrix for split and intentional move, including playback and persisted-state checks. Both trim edges, delete, duplicate, undo, and redo now have browser evidence. Do not claim full editor readiness until split and move are green. Separately, add deterministic database test setup only if it can reuse the existing architecture without introducing a second persistence system.
+Retest plain-click selection with a clean real-user pointer sequence, then verify post-split/post-move playback and refresh persistence. The structural operations—both trim edges, split, intentional drag, delete, duplicate, undo, and redo—now have browser evidence. Do not claim full product readiness until AI, export, and deterministic server tests are resolved or explicitly scoped as unsupported.
 
 ## Is Reelio actually usable by a real user?
 
