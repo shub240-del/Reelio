@@ -65,3 +65,14 @@ The current package manager emitted a warning that the `pnpm` field in `package.
 | 2026-08-22 | Commit `8b06525` | Guest-mode detector repair and `IMPLEMENTATION_STATUS.md` committed locally; not pushed. |
 | 2026-08-22 | Local browser after upload | Real MP4 accepted, metadata/preview/timeline created, playback advanced, and asset/clip restored after editor refresh. |
 | 2026-08-22 | Local browser editor operations | Direct clip click caused an unintended move to approximately 0.167s; Export click produced no observable output. |
+
+
+## Timeline verification continuation — 2026-08-22
+
+The existing timeline interaction model was inspected and browser-tested against persisted real MP4 clips. A stationary real browser click selected a clip without changing its rendered timeline position: the clip remained at the same left coordinate and the Duplicate/Delete controls became enabled. An intentional drag remains classified separately as Move; earlier browser evidence recorded a real clip move from approximately 1.167 seconds to 2.167 seconds.
+
+Browser-verified editing evidence includes right trim, left trim, split, explicit move, delete, duplicate, and their relevant Undo/Redo flows. The persisted editor currently restores two real MP4 assets and their clips after refresh. The browser console was rechecked after the empty-source guard: only the standard React DevTools informational message remained, with no unexpected runtime errors.
+
+The localized runtime fix guards preview and asset-sidebar media elements against empty URLs during the asynchronous asset-loading window. Focused tests and TypeScript checking pass after the fix. The current timeline classification is REAL / VERIFIED for click-select, intentional drag, both trim edges, split, delete, duplicate, Undo, and Redo. Image/audio timeline playback, full multi-track behavior, AI timeline execution, and export remain PARTIAL or UNKNOWN until independently browser-verified.
+
+Exact next milestone: browser-verify edited-timeline playback across trim, split, gaps, mute, visibility, and multiple clips, then connect and verify the existing structured AI edit-operation path before assessing export.

@@ -974,7 +974,7 @@ export default function Editor() {
                       <span>{asset.width > 0 && asset.height > 0 ? `${asset.width}x${asset.height}` : "Audio"}</span>
                       <span>{formatFileSize(asset.sizeBytes)}</span>
                     </div>
-                    {isImage ? <img src={asset.url} alt={asset.name} className="w-full mt-2 rounded max-h-20 object-cover" /> : isAudio ? <audio src={asset.url} controls className="w-full mt-2 h-8" /> : <video src={asset.url} className="w-full mt-2 rounded max-h-20 object-cover" muted poster={`${asset.url}#t=1`} preload="metadata" controls />}
+                    {asset.url ? (isImage ? <img src={asset.url} alt={asset.name} className="w-full mt-2 rounded max-h-20 object-cover" /> : isAudio ? <audio src={asset.url} controls className="w-full mt-2 h-8" /> : <video src={asset.url} className="w-full mt-2 rounded max-h-20 object-cover" muted poster={`${asset.url}#t=1`} preload="metadata" controls />) : <div className="mt-2 h-12 rounded bg-white/5 animate-pulse" aria-label="Loading preview" />}
                     <div className="flex gap-2 mt-2">
                       <Button size="sm" onClick={() => handleAddAssetToTimeline(asset)} disabled={asset.duration <= 0 || createClipMutation.isPending} className="h-7 flex-1 bg-brand-500/15 hover:bg-brand-500/25 text-brand-300 text-[10px]">Add to timeline</Button>
                       <Button size="sm" variant="outline" onClick={() => handleRemoveAsset(asset)} disabled={deleteAssetMutation.isPending} className="h-7 border-white/10 text-gray-400 hover:text-red-300 text-[10px]" aria-label={`Remove ${asset.name}`}><Trash2 className="w-3 h-3" /></Button>
@@ -990,7 +990,7 @@ export default function Editor() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Video Preview - Assembled timeline playback */}
           <div className="flex-1 flex items-center justify-center bg-black relative">
-            {activeClip ? (
+            {activeClip?.assetUrl ? (
               <video
                 ref={previewVideoRef}
                 key={activeClip.id}
