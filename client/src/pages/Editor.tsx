@@ -316,7 +316,6 @@ export default function Editor() {
       source.preload = "auto";
       recorder.start(250);
       const end = timelineContentEnd(timelineClips);
-      const frameMs = 1000 / 30;
       for (let time = 0; time < end; time += 1 / 30) {
         const clip = videoClips.find((candidate) => time >= candidate.timelineStart && time < candidate.timelineStart + candidate.duration);
         context.fillStyle = "#000";
@@ -340,10 +339,14 @@ export default function Editor() {
             context.drawImage(source, 0, 0, canvas.width, canvas.height);
           }
         }
-        await new Promise((resolve) => setTimeout(resolve, frameMs));
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
       recorder.stop();
       const blob = await stopped;
+      stream.getTracks().forEach((track) => track.stop());
+      source.pause();
+      source.removeAttribute("src");
+      source.load();
       if (blob.size === 0) throw new Error("Export produced an empty file");
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");

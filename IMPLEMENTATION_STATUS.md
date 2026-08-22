@@ -43,11 +43,11 @@ The Export button now runs a real canvas/MediaRecorder renderer and was browser-
 | Authenticated project CRUD | PARTIAL | Server procedures and tests exist, but success-path tests require an unavailable database. |
 | S3/cloud upload | PARTIAL | Upload and storage code exist, but credentials and end-to-end upload were not verified. |
 | AI chat/edit agent | REAL / VERIFIED for the two required deterministic commands | The existing AIChatBox emits validated structured plans. “Remove the first 5 seconds” and “Remove silence” both mutate real persisted timeline state; silence removal was verified with a real WAV, including persisted audio fragments. Undo/Redo and refresh were verified. A model-backed planner is not yet present. |
-| Video export | PARTIAL | A real canvas/MediaRecorder WebM renderer now consumes visible video timeline clips and produced a browser-downloadable, playable 24 KB VP9 output. Audio mixing, exact duration conformance, and the full edited-state export matrix remain unverified. |
+| Video export | PARTIAL | A real canvas/MediaRecorder WebM renderer consumes visible video timeline clips and produced a browser-downloadable, playable 24 KB VP9 output. The forensic audit confirms audio mixing, exact duration conformance, and the full edited-state export matrix remain unverified. |
 | Accessibility/SEO/branding | PARTIAL | Marketing commit includes metadata, focus, reduced-motion, and brand work; no formal accessibility audit was run. |
 
 ## Next milestone
-Complete the edited-timeline playback gate by browser-verifying trim offsets, split segments, gaps, mute/visibility, audio/video multiple clips, and boundaries. Then verify export against those edited states, add audio mixing if required, and resolve the nine server tests that currently require unavailable MySQL.
+The post-implementation forensic audit is recorded in `FORENSIC_AUDIT_REPORT.md`. Complete the remaining edited-timeline playback and export acceptance matrix with trim, split, gaps, mute, visibility, multiple tracks, exact duration, and audio mixing. Then resolve the nine server tests that currently require unavailable MySQL.
 
 ## Known technical debt
 
