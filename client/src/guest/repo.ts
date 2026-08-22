@@ -304,7 +304,12 @@ async function assetUpdate(input: {
 }
 
 async function assetDelete(input: { id: number }): Promise<{ success: true }> {
+  const asset = await get<GuestAsset>("assets", input.id);
   await delAllBy("clips", "assetId", input.id);
+  if (asset) {
+    revokeBlobUrl(asset.storageKey);
+    await del("blobs", asset.storageKey);
+  }
   await del("assets", input.id);
   return { success: true };
 }

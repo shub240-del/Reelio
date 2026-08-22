@@ -6,6 +6,8 @@ import {
   ChevronDown,
   ChevronUp,
   FileVideo,
+  FileAudio,
+  FileImage,
   Loader2,
   Pause,
   Play,
@@ -45,6 +47,7 @@ import {
   splitOffset,
 } from "@/editor/interaction";
 import { useWaveform } from "@/hooks/useWaveform";
+import { isSupportedMedia, probeMedia } from "@/editor/media";
 import { AlertTriangle } from "lucide-react";
 
 /* ─── Types ─── */
@@ -77,6 +80,27 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function probeAudio(file: File): Promise<{ duration: number }> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve({ duration: Number.isFinite(audio.duration) ? audio.duration : 0 }); };
+    audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error("This audio file could not be decoded")); };
+    audio.src = url;
+  });
+}
+
+function probeImage(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => { URL.revokeObjectURL(url); resolve({ width: image.naturalWidth, height: image.naturalHeight }); };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error("This image file could not be decoded")); };
+    image.src = url;
+  });
 }
 
 /**
@@ -166,6 +190,7 @@ export default function Editor() {
 
   /* Mutation hooks */
   const uploadMutation = trpc.asset.upload.useMutation();
+  const deleteAssetMutation = trpc.asset.delete.useMutation();
   const createClipMutation = trpc.clip.create.useMutation();
   const updateClipMutation = trpc.clip.update.useMutation();
   const deleteClipMutation = trpc.clip.delete.useMutation();
@@ -255,65 +280,86 @@ export default function Editor() {
   const splitTargets = selectedClips.length ? selectedClips : activeClip ? [activeClip] : [];
   const canSplit = splitTargets.some((c) => splitOffset(c, currentTime) !== null);
 
+  const handleAddAssetToTimeline = useCallback(async (asset: any) => {
+    if (!asset || asset.duration <= 0) {
+      toast.error("This asset has no usable duration");
+      return;
+    }
+    try {
+      await createClipMutation.mutateAsync({
+        projectId: projId,
+        assetId: asset.id,
+        trackType: asset.mimeType.startsWith("audio/") ? "audio" : "video",
+        sourceStart: 0,
+        duration: asset.duration,
+        timelineStart: timelineContentEnd(timelineClips),
+        sortIndex: timelineClips.length,
+      });
+      await refetchClips();
+      toast.success(`Added "${asset.name}" to timeline`);
+    } catch (err) {
+      toast.error("Could not add asset: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  }, [createClipMutation, projId, refetchClips, timelineClips, timelineClips.length]);
+
+  const handleRemoveAsset = useCallback(async (asset: any) => {
+    try {
+      await deleteAssetMutation.mutateAsync({ id: asset.id });
+      await Promise.all([refetchAssets(), refetchClips()]);
+      toast.success(`Removed "${asset.name}"`);
+    } catch (err) {
+      toast.error("Could not remove asset: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  }, [deleteAssetMutation, refetchAssets, refetchClips]);
+
   /* Upload handler */
   const handleFileUpload = useCallback(
     async (file: File) => {
-      const validTypes = ["video/mp4", "video/quicktime", "video/webm", "video/x-matroska"];
-      const isVideo = file.type.startsWith("video/") || validTypes.includes(file.type);
-      if (!isVideo) {
-        toast.error("Please select a video file (MP4, MOV, or WebM)");
+      if (!isSupportedMedia(file)) {
+        toast.error("Please select a supported video, image, or audio file");
         return;
       }
-
+      const isImage = file.type.startsWith("image/");
+      const isAudio = file.type.startsWith("audio/");
+      const isVideo = file.type.startsWith("video/") || !isImage && !isAudio;
       setUploading(true);
       setUploadProgress(0);
-
       let progressInterval: ReturnType<typeof setInterval> | undefined;
-
       try {
+        let metadata = { duration: 0, width: 0, height: 0, fps: 0, hasAudio: false };
+        if (isVideo) metadata = await probeMedia(file);
+        else if (isImage) {
+          const image = await probeImage(file);
+          metadata = { ...metadata, ...image, duration: 5 };
+        } else {
+          metadata = { ...metadata, ...(await probeAudio(file)) };
+        }
         const arrayBuffer = await file.arrayBuffer();
-        const uint8Array = new Uint8Array(arrayBuffer);
-        const base64 = btoa(
-          Array.from(uint8Array)
-            .map((b) => String.fromCharCode(b))
-            .join("")
-        );
-
-        progressInterval = setInterval(() => {
-          setUploadProgress((p) => Math.min(p + Math.random() * 15, 90));
-        }, 200);
-
+        const bytes = new Uint8Array(arrayBuffer);
+        const base64 = btoa(Array.from(bytes).map((b) => String.fromCharCode(b)).join(""));
+        progressInterval = setInterval(() => setUploadProgress((p) => Math.min(p + Math.random() * 15, 90)), 200);
         await uploadMutation.mutateAsync({
           projectId: projId,
           base64Data: base64,
           fileName: file.name,
-          mimeType: file.type || "video/mp4",
+          mimeType: file.type || "application/octet-stream",
           sizeBytes: file.size,
+          duration: metadata.duration,
+          width: metadata.width,
+          height: metadata.height,
+          fps: metadata.fps,
+          hasAudio: metadata.hasAudio,
         });
-
-        clearInterval(progressInterval);
+        if (progressInterval) clearInterval(progressInterval);
         setUploadProgress(100);
-
-        // Auto-add clip to timeline
         const newAssets = await refetchAssets();
-        const newAsset = newAssets.data?.[newAssets.data.length - 1];
-        if (newAsset) {
-          await createClipMutation.mutateAsync({
-            projectId: projId,
-            assetId: newAsset.id,
-            sourceStart: 0,
-            duration: newAsset.duration || 30,
-            timelineStart: timelineContentEnd(timelineClips),
-            sortIndex: timelineClips.length,
-          });
-          await refetchClips();
-          toast.success(`Added "${file.name}" to timeline`);
+        const newAsset = newAssets.data?.find((asset) => asset.name === file.name && asset.sizeBytes === file.size) ?? newAssets.data?.[newAssets.data.length - 1];
+        if (newAsset && newAsset.duration > 0) {
+          await handleAddAssetToTimeline(newAsset);
+        } else {
+          toast.success(`Imported "${file.name}"`);
         }
-
-        setTimeout(() => {
-          setUploading(false);
-          setUploadProgress(0);
-        }, 500);
+        setTimeout(() => { setUploading(false); setUploadProgress(0); }, 500);
       } catch (err) {
         if (progressInterval) clearInterval(progressInterval);
         setUploading(false);
@@ -321,7 +367,7 @@ export default function Editor() {
         toast.error("Upload failed: " + (err instanceof Error ? err.message : "Unknown error"));
       }
     },
-    [projId, timelineClips, timelineClips.length]
+    [handleAddAssetToTimeline, projId, refetchAssets, timelineClips, timelineClips.length, uploadMutation]
   );
 
   /* Video preview sync - when active clip changes, switch the video source */
@@ -712,9 +758,8 @@ export default function Editor() {
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragOver(false);
-      const files = Array.from(e.dataTransfer.files);
-      const videoFile = files.find((f) => f.type.startsWith("video/"));
-      if (videoFile) handleFileUpload(videoFile);
+      const file = Array.from(e.dataTransfer.files).find(isSupportedMedia);
+      if (file) handleFileUpload(file);
     },
     [handleFileUpload]
   );
@@ -899,14 +944,14 @@ export default function Editor() {
                 ) : (
                   <>
                     <Upload className="w-5 h-5" />
-                    <span className="text-xs">Drop video here</span>
+                    <span className="text-xs">Drop media or choose a file</span>
                   </>
                 )}
               </button>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="video/*"
+                accept="video/*,audio/*,image/*,.mkv,.mov,.mp4,.webm"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
@@ -915,29 +960,28 @@ export default function Editor() {
                 }}
               />
 
-              {(assets ?? []).map((asset) => (
-                <div
-                  key={asset.id}
-                  className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.04] hover:border-white/10 transition-colors group"
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <FileVideo className="w-4 h-4 text-brand-500 flex-shrink-0" />
-                    <span className="text-xs text-white truncate">{asset.name}</span>
+              {(assets ?? []).map((asset) => {
+                const isImage = asset.mimeType.startsWith("image/");
+                const isAudio = asset.mimeType.startsWith("audio/");
+                return (
+                  <div key={asset.id} className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.04] hover:border-white/10 transition-colors group">
+                    <div className="flex items-center gap-2 mb-1">
+                      {isImage ? <FileImage className="w-4 h-4 text-brand-500 flex-shrink-0" /> : isAudio ? <FileAudio className="w-4 h-4 text-brand-500 flex-shrink-0" /> : <FileVideo className="w-4 h-4 text-brand-500 flex-shrink-0" />}
+                      <span className="text-xs text-white truncate" title={asset.name}>{asset.name}</span>
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px] text-gray-500">
+                      <span>{asset.duration > 0 ? formatTime(asset.duration) : "Still"}</span>
+                      <span>{asset.width > 0 && asset.height > 0 ? `${asset.width}x${asset.height}` : "Audio"}</span>
+                      <span>{formatFileSize(asset.sizeBytes)}</span>
+                    </div>
+                    {isImage ? <img src={asset.url} alt={asset.name} className="w-full mt-2 rounded max-h-20 object-cover" /> : isAudio ? <audio src={asset.url} controls className="w-full mt-2 h-8" /> : <video src={asset.url} className="w-full mt-2 rounded max-h-20 object-cover" muted poster={`${asset.url}#t=1`} preload="metadata" controls />}
+                    <div className="flex gap-2 mt-2">
+                      <Button size="sm" onClick={() => handleAddAssetToTimeline(asset)} disabled={asset.duration <= 0 || createClipMutation.isPending} className="h-7 flex-1 bg-brand-500/15 hover:bg-brand-500/25 text-brand-300 text-[10px]">Add to timeline</Button>
+                      <Button size="sm" variant="outline" onClick={() => handleRemoveAsset(asset)} disabled={deleteAssetMutation.isPending} className="h-7 border-white/10 text-gray-400 hover:text-red-300 text-[10px]" aria-label={`Remove ${asset.name}`}><Trash2 className="w-3 h-3" /></Button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3 text-[10px] text-gray-500">
-                    <span>{formatTime(asset.duration)}</span>
-                    <span>{asset.width}x{asset.height}</span>
-                    <span>{formatFileSize(asset.sizeBytes)}</span>
-                  </div>
-                  <video
-                    src={asset.url}
-                    className="w-full mt-2 rounded max-h-20 object-cover"
-                    muted
-                    poster={`${asset.url}#t=1`}
-                    preload="metadata"
-                  />
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

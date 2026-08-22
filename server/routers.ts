@@ -8,6 +8,7 @@ import {
   createAsset,
   createCaption,
   createClip,
+  deleteAsset,
   createExport,
   createMarker,
   createProject,
@@ -99,6 +100,11 @@ export const appRouter = router({
         fileName: z.string(),
         mimeType: z.string(),
         sizeBytes: z.number(),
+        duration: z.number().optional(),
+        width: z.number().optional(),
+        height: z.number().optional(),
+        fps: z.number().optional(),
+        hasAudio: z.boolean().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const userId = ctx.user.id;
@@ -111,8 +117,8 @@ export const appRouter = router({
         const { key, url } = await storagePut(storageKey, buffer, input.mimeType);
 
         // Extract video metadata for video files
-        let duration = 0, width = 0, height = 0, fps = 30, hasAudio = false;
-        if (isVideoFile(input.mimeType)) {
+        let duration = input.duration ?? 0, width = input.width ?? 0, height = input.height ?? 0, fps = input.fps ?? 30, hasAudio = input.hasAudio ?? false;
+        if (isVideoFile(input.mimeType) && input.duration === undefined) {
           try {
             const meta = extractVideoMetadata(buffer);
             duration = meta.duration;
@@ -141,6 +147,12 @@ export const appRouter = router({
         });
 
         return asset;
+      }),
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await deleteAsset(input.id, ctx.user.id);
+        return { success: true };
       }),
   }),
 

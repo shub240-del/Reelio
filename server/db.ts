@@ -133,6 +133,17 @@ export async function getAsset(id: number) {
   return result[0];
 }
 
+export async function deleteAsset(id: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const asset = await getAsset(id);
+  if (!asset) throw new Error("Asset not found");
+  const project = await db.select().from(projects).where(eq(projects.id, asset.projectId)).limit(1);
+  if (!project[0] || project[0].userId !== userId) throw new Error("Unauthorized: asset does not belong to this user");
+  await db.delete(clips).where(eq(clips.assetId, id));
+  await db.delete(assets).where(eq(assets.id, id));
+}
+
 /* ─── Clip helpers ─── */
 export async function createClip(data: InsertClip) {
   const db = await getDb();
