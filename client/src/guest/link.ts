@@ -63,7 +63,14 @@ async function detectMode(url: string): Promise<ReelioMode> {
     // A proxy or SPA fallback can answer 200 with HTML; that is not a backend.
     const body = await res.text();
     try {
-      JSON.parse(body);
+      const parsed = JSON.parse(body);
+      const envelope = Array.isArray(parsed) ? parsed[0] : parsed;
+      const data = envelope?.result?.data;
+      const user = data && typeof data === "object" && "json" in data ? data.json : data;
+      // auth.me is public and returns null for a valid unauthenticated session.
+      // That response means the backend is reachable, but the user must use the
+      // local IndexedDB implementation rather than protected cloud procedures.
+      if (user == null) return settle("guest");
     } catch {
       return settle("guest");
     }
