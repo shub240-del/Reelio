@@ -20,7 +20,7 @@ The score reflects a usable landing-to-editor guest workflow with real media imp
 | Video Preview | REAL | Yes |
 | Timeline | REAL | Yes |
 | Playback | VERIFIED for uploaded source | Yes, play advanced; pause/seek/timeline-boundary coverage incomplete |
-| Trim | UNVERIFIED | No complete browser proof |
+| Trim | VERIFIED for right-edge trim and history | Yes; a real trim reduced duration from 3s to 2s, Undo restored it, and Redo reapplied it; left-edge trim remains unverified |
 | Split | UNVERIFIED | No complete browser proof |
 | Move | PARTIAL | A duplicate operation moved successfully; plain-click behavior needs a clean-session retest because an automated visible click produced an unintended ~0.167s shift |
 | Delete | VERIFIED for selected clip | Yes; the second clip was deleted and disappeared from the timeline |
@@ -48,11 +48,11 @@ A direct automated click on the visible clip once produced a `Clip moved` toast 
 
 ## What is still unverified
 
-The full browser sequence for trim, split, and intentional move was not completed. Delete, duplicate, undo, and redo now have direct browser evidence, including duplicate restoration after a clean editor refresh. Playback was verified for a real source, but gaps, clip boundaries, source offsets, mute/visibility, and exact timeline synchronization were not all tested. The AI chat component and edit-operation contract exist, but no browser test proved the complete chain from user request to validated operation, timeline mutation, persistence, and undo/redo.
+The full browser sequence for left-edge trim, split, and intentional move was not completed. Right-edge trim now has direct browser evidence: the duration changed from 3s to 2s, Undo restored the original state, and Redo reapplied the trim. Delete, duplicate, undo, and redo also have direct browser evidence, including duplicate restoration after a clean editor refresh. Playback was verified for a real source, but gaps, clip boundaries, source offsets, mute/visibility, and exact timeline synchronization were not all tested. The AI chat component and edit-operation contract exist, but no browser test proved the complete chain from user request to validated operation, timeline mutation, persistence, and undo/redo.
 
 ## Exact next milestone
 
-Complete a clean browser operation matrix for left trim, right trim, split, and intentional move, including playback and persisted-state checks. Delete, duplicate, undo, and redo now have browser evidence, but the remaining editing matrix must be green before claiming full editor readiness. Do not begin export or AI work until this matrix is complete. Separately, add deterministic database test setup only if it can reuse the existing architecture without introducing a second persistence system.
+Complete a clean browser operation matrix for left trim, split, and intentional move, including playback and persisted-state checks. Right trim, delete, duplicate, undo, and redo now have browser evidence. Do not claim full editor readiness until the remaining operations are green. Separately, add deterministic database test setup only if it can reuse the existing architecture without introducing a second persistence system.
 
 ## Is Reelio actually usable by a real user?
 
