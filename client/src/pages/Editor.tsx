@@ -52,6 +52,7 @@ import { AlertTriangle } from "lucide-react";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
 import { applyEditOps, describePlan } from "../../../shared/editOps";
 import { planEditorRequest } from "@/editor/ai";
+import { detectSilenceRanges } from "@/editor/silence";
 
 /* ─── Types ─── */
 interface TimelineClip {
@@ -284,7 +285,12 @@ export default function Editor() {
     setAiMessages((messages) => [...messages, { role: "user", content }]);
     setAiLoading(true);
     try {
-      const plan = planEditorRequest(content, timelineClips);
+      let silenceRanges: { start: number; end: number }[] = [];
+      if (/^remove silence\.?$/i.test(content.trim())) {
+        const audioAsset = (assets ?? []).find((asset) => asset.hasAudio && asset.url);
+        if (audioAsset) silenceRanges = await detectSilenceRanges(audioAsset.url);
+      }
+      const plan = planEditorRequest(content, timelineClips, silenceRanges);
       const assetMap = new Map(
         (assets ?? []).map((asset) => [asset.id, {
           id: asset.id,

@@ -6,7 +6,7 @@ import type { TimelineClip } from "../../../shared/timeline";
  * The operation remains a real validated EditPlan, so a model can replace this
  * parser later without changing execution, history, or persistence semantics.
  */
-export function planEditorRequest(request: string, clips: TimelineClip[]): EditPlan {
+export function planEditorRequest(request: string, clips: TimelineClip[], silenceRanges: { start: number; end: number }[] = []): EditPlan {
   const normalized = request.trim().toLowerCase();
   if (/^remove the first 5 seconds?\.?$/.test(normalized)) {
     return editPlanSchema.parse({
@@ -23,8 +23,10 @@ export function planEditorRequest(request: string, clips: TimelineClip[]): EditP
 
   if (normalized === "remove silence" || normalized === "remove silence.") {
     return editPlanSchema.parse({
-      summary: "Silence detection is not available for this timeline yet.",
-      operations: [],
+      summary: silenceRanges.length > 0
+        ? `Remove ${silenceRanges.length} detected silent span${silenceRanges.length === 1 ? "" : "s"}.`
+        : "No decodable silent spans were detected in the timeline audio.",
+      operations: silenceRanges.length > 0 ? [{ type: "removeRanges", ranges: silenceRanges, reason: "Detected low-amplitude audio spans." }] : [],
     });
   }
 

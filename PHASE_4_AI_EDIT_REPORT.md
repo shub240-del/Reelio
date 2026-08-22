@@ -15,7 +15,7 @@ This milestone connected the existing `AIChatBox` to the existing shared `editPl
 | Undo AI edit | **REAL / VERIFIED** | Undo toast showed `Undone: AI: Remove the first 5 seconds`; both original clips returned. |
 | Redo AI edit | **REAL / VERIFIED** | Redo toast showed `Redone: AI: Remove the first 5 seconds`; the shortened timeline returned. |
 | Refresh persistence | **REAL / VERIFIED** | After reload, the DOM showed the shortened clip with `duration=1`, `sourceStart=2`, and `start=0`. |
-| Remove silence | **UNKNOWN** | Existing waveform code computes display peaks, but no verified silence detector or structured silence-range planner exists. No fake mutation was added. |
+| Remove silence | **PARTIAL** | A real browser-side PCM silence detector now exists and is wired to the structured `removeRanges` planner. In the persisted test project, both real MP4s report no audio track, so the browser correctly returned `No decodable silent spans were detected in the timeline audio` and made no fake mutation. A real audio-bearing fixture has not yet been browser-verified. |
 
 ## Regression checks
 
@@ -23,6 +23,6 @@ This milestone connected the existing `AIChatBox` to the existing shared `editPl
 
 ## Exact next milestone
 
-Implement a real silence-analysis path that derives time ranges from decoded audio samples, emits validated `removeRanges` operations, and browser-verifies the resulting mutation, undo/redo, refresh, and preview behavior. Only then proceed to real export.
+Browser-verify the new silence-analysis path with a real audio-bearing fixture, including detected ranges, validated `removeRanges`, undo/redo, refresh, and preview behavior. Only then proceed to real export.
 
 **Prepared 2026-08-22.**
