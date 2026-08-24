@@ -1,16 +1,13 @@
 /**
  * Reelio marketing homepage.
  *
- * Original composition, copy and artwork. Every visual on this page is
- * generated from SVG/CSS/React — there are no screenshots, no stock imagery and
- * no borrowed illustrations, so the page cannot 404 on a missing asset and
- * carries no third-party visual identity.
- *
- * Sections are added in milestone order; each is a self-contained component
- * under components/marketing/.
+ * The page composes the existing branded header and hero with the extended
+ * product-experience sections. All visuals remain original CSS/SVG/React work;
+ * the actual editor remains available through the real project route.
  */
 import { Nav } from "@/components/marketing/Nav";
 import { Hero } from "@/components/marketing/Hero";
+import { ExperienceSections } from "@/components/marketing/ExperienceSections";
 
 export default function Home() {
   return (
@@ -18,6 +15,7 @@ export default function Home() {
       <Nav />
       <main id="main">
         <Hero />
+        <ExperienceSections />
       </main>
     </div>
   );
