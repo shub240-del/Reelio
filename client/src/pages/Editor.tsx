@@ -214,6 +214,7 @@ export default function Editor() {
   const clipsRef = useRef<TimelineClip[]>([]);
   const selectionRef = useRef<number[]>([]);
   const autoplayNextRef = useRef(false);
+  const audioRefs = useRef(new Map<number, HTMLAudioElement>());
   selectionRef.current = selectedClipIds;
 
   const {
@@ -281,6 +282,35 @@ export default function Editor() {
     }
   }, [assets]);
   const activeClip = getActiveClip(timelineClips, currentTime);
+  const activeAudioClips = timelineClips.filter(
+    (clip) =>
+      clip.trackType === "audio" &&
+      clip.visible !== false &&
+      clip.assetUrl &&
+      currentTime >= clip.timelineStart &&
+      currentTime < clip.timelineStart + clip.duration,
+  );
+
+  /** Keep every audible audio-track clip aligned with the shared timeline clock. */
+  useEffect(() => {
+    const activeIds = new Set(activeAudioClips.map((clip) => clip.id));
+    for (const [id, audio] of audioRefs.current) {
+      if (!activeIds.has(id)) audio.pause();
+    }
+    for (const clip of activeAudioClips) {
+      const audio = audioRefs.current.get(clip.id);
+      if (!audio) continue;
+      const sourceTime = clip.sourceStart + currentTime - clip.timelineStart;
+      if (Math.abs(audio.currentTime - sourceTime) > 0.08) audio.currentTime = sourceTime;
+      audio.muted = clip.muted;
+      audio.volume = clip.muted ? 0 : 1;
+      if (isPlaying) {
+        void audio.play().catch(() => undefined);
+      } else {
+        audio.pause();
+      }
+    }
+  }, [activeAudioClips, currentTime, isPlaying]);
 
   const handleExport = async () => {
     if (exporting || timelineClips.length === 0) return;
@@ -1169,7 +1199,7 @@ export default function Editor() {
               <video
                 ref={previewVideoRef}
                 src={activeClip.assetUrl}
-                muted={!((assets ?? []).find((asset) => asset.id === activeClip.assetId)?.hasAudio)}
+                muted={activeClip.muted || !((assets ?? []).find((asset) => asset.id === activeClip.assetId)?.hasAudio)}
                 playsInline
                 className="max-w-full max-h-full object-contain"
                 onTimeUpdate={handlePreviewTimeUpdate}
@@ -1210,6 +1240,20 @@ export default function Editor() {
                 <p className="text-gray-600 text-sm mt-1">Supports MP4, MOV, WebM</p>
               </div>
             )}
+            {timelineClips
+              .filter((clip) => clip.trackType === "audio" && clip.assetUrl && clip.visible !== false)
+              .map((clip) => (
+                <audio
+                  key={clip.id}
+                  ref={(node) => {
+                    if (node) audioRefs.current.set(clip.id, node);
+                    else audioRefs.current.delete(clip.id);
+                  }}
+                  src={clip.assetUrl}
+                  preload="auto"
+                  aria-hidden="true"
+                />
+              ))}
 
             <div className="absolute top-3 right-3 z-30 w-72">
               <AIChatBox
