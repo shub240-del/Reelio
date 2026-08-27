@@ -62,6 +62,35 @@ export const aiEditRequestSchema = z.object({
     .max(2000)
     .default([]),
 
+  /** Optional transcript segments with timestamps. */
+  transcriptSegments: z
+    .array(
+      z.object({
+        id: z.number().int().optional(),
+        text: z.string(),
+        start: z.number().min(0),
+        end: z.number().min(0),
+      }),
+    )
+    .max(500)
+    .default([]),
+
+  /** Optional detected filler words. */
+  fillerWords: z
+    .array(
+      z.object({
+        text: z.string(),
+        start: z.number().min(0),
+        end: z.number().min(0),
+        duration: z.number().min(0),
+      }),
+    )
+    .max(1000)
+    .default([]),
+
+  /** Target duration constraint for highlight / short-form creation (in seconds). */
+  targetDuration: z.number().min(1).max(3600).optional(),
+
   /** Optional: current playhead position. */
   playhead: z.number().min(0).default(0),
 });
@@ -71,47 +100,56 @@ export type AIEditRequest = z.infer<typeof aiEditRequestSchema>;
 // ─── Prompt construction ───────────────────────────────────────────────────
 
 function buildSystemPrompt(): string {
-  return `You are Reelio's AI video-editing assistant. You receive a timeline description and a user instruction. You must respond with a JSON object that represents an editing plan.
+  return `You are Reelio's AI video-editing assistant powered by NVIDIA NIM reasoning.
+You receive real media intelligence evidence (timeline clips, transcript segments, detected silence intervals, filler-word timestamps) and a user instruction.
+You must reason strictly over the provided evidence and return a validated JSON edit plan.
 
 RESPONSE FORMAT — you must return valid JSON only, no prose, no markdown fences:
 {
-  "summary": "<one sentence describing what you are doing>",
+  "summary": "<one sentence describing the plan>",
   "operations": [ ... ]
 }
 
 OPERATION TYPES (use only these):
 
-1. removeRanges — cut a time range and close the gap:
+1. removeRanges — cut timestamp ranges from the timeline and ripple-close the gap:
    {"type":"removeRanges","ranges":[{"start":<sec>,"end":<sec>}],"reason":"<why>"}
+   Use for:
+   - "Remove long pauses / silence": use the exact DETECTED SILENCE RANGES provided.
+   - "Remove filler words": use the exact DETECTED FILLER WORDS ranges provided.
+   - "Remove the first X seconds": {"type":"removeRanges","ranges":[{"start":0,"end":X}],"reason":"Remove initial segment"}
 
-2. trimClip — trim one edge of a clip:
+2. keepRanges — keep only specified key highlight spans (inverse cut, for short-form summaries):
+   {"type":"keepRanges","ranges":[{"start":<sec>,"end":<sec>}],"reason":"<why>"}
+   Use for:
+   - "Make this a 30 second short" / highlight reel: select the most coherent, speech-dense ranges whose sum of durations is <= target duration (e.g. <= 30.0s).
+
+3. trimClip — trim one edge of a clip:
    {"type":"trimClip","clipId":<int>,"edge":"start"|"end","toTime":<sec>,"ripple":false}
 
-3. moveClip — reposition a clip on the timeline:
+4. moveClip — reposition a clip on the timeline:
    {"type":"moveClip","clipId":<int>,"timelineStart":<sec>,"ripple":false}
 
-4. removeClips — delete entire clips:
+5. removeClips — delete entire clips:
    {"type":"removeClips","clipIds":[<int>...],"ripple":true}
 
-5. splitClip — split one clip into two:
+6. splitClip — split one clip into two:
    {"type":"splitClip","clipId":<int>,"atTime":<sec>}
+   Use for: "Split this clip at playhead" -> split at the provided playhead time if it intersects a clip.
 
-6. setClipProps — change clip visibility/mute/lock:
+7. setClipProps — change clip visibility/mute/lock:
    {"type":"setClipProps","clipId":<int>,"visible":<bool>,"muted":<bool>}
 
-7. addCaptions — add timestamped subtitle cues to the timeline:
+8. addCaptions — add timestamped subtitle cues:
    {"type":"addCaptions","cues":[{"text":"<caption text>","startTime":<sec>,"endTime":<sec>}],"replaceExisting":true}
-   Use for "generate captions", "add subtitles", "transcribe" instructions.
-   Infer plausible caption text from asset names and timeline structure.
-   Each cue must have startTime < endTime and both must be within the timeline.
 
-RULES:
-- All times are in seconds (floating point).
+CRITICAL RULES:
+- All times are in seconds (floating point numbers).
 - clipId must be an integer that exists in the provided clip list.
-- removeRanges start must be < end; both must be >= 0.
-- If the instruction cannot be safely executed (e.g. references non-existent clips), return operations:[].
-- Do NOT invent clip IDs that don't exist in the provided data.
-- Do NOT hallucinate silence ranges; only use the provided silenceRanges array.
+- For removeRanges and keepRanges, start must be < end and both >= 0.
+- NEVER invent timestamps or clip IDs.
+- For "Remove long pauses", map directly to the provided DETECTED SILENCE RANGES.
+- For "Remove filler words", map directly to the provided DETECTED FILLER WORDS.
 - Return ONLY the JSON object — no explanation text outside the JSON.`;
 }
 
@@ -138,10 +176,24 @@ function buildUserPrompt(req: AIEditRequest): string {
     )
     .join("\n");
 
+  const silenceRanges = req.silenceRanges ?? [];
+  const fillerWords = req.fillerWords ?? [];
+  const transcriptSegments = req.transcriptSegments ?? [];
+
   const silenceSummary =
-    req.silenceRanges.length > 0
-      ? req.silenceRanges.map((r) => `  ${r.start.toFixed(3)}s–${r.end.toFixed(3)}s`).join("\n")
+    silenceRanges.length > 0
+      ? silenceRanges.map((r) => `  ${r.start.toFixed(3)}s–${r.end.toFixed(3)}s (${(r.end - r.start).toFixed(2)}s)`).join("\n")
       : "  (none detected)";
+
+  const fillerSummary =
+    fillerWords.length > 0
+      ? fillerWords.map((f) => `  "${f.text}": ${f.start.toFixed(3)}s–${f.end.toFixed(3)}s (${f.duration.toFixed(2)}s)`).join("\n")
+      : "  (none detected)";
+
+  const transcriptSummary =
+    transcriptSegments.length > 0
+      ? transcriptSegments.map((t) => `  [${t.start.toFixed(2)}s–${t.end.toFixed(2)}s] ${t.text}`).join("\n")
+      : "  (no transcript available)";
 
   return `TIMELINE (total duration: ${totalDuration.toFixed(3)}s, playhead: ${req.playhead.toFixed(3)}s):
 ${clipsSummary || "  (no clips)"}
@@ -149,8 +201,16 @@ ${clipsSummary || "  (no clips)"}
 ASSETS:
 ${assetsSummary || "  (none)"}
 
-DETECTED SILENCE RANGES:
+MEDIA INTELLIGENCE EVIDENCE:
+Detected Silence Ranges:
 ${silenceSummary}
+
+Detected Filler Words:
+${fillerSummary}
+
+Transcript Segments:
+${transcriptSummary}
+${req.targetDuration ? `Target Duration Constraint: <= ${req.targetDuration} seconds` : ""}
 
 USER INSTRUCTION: ${req.instruction}
 
@@ -179,8 +239,9 @@ export async function requestAIEdit(req: AIEditRequest): Promise<AIEditResult> {
     );
   }
 
+  const parsedReq = aiEditRequestSchema.parse(req);
   const systemPrompt = buildSystemPrompt();
-  const userPrompt = buildUserPrompt(req);
+  const userPrompt = buildUserPrompt(parsedReq);
 
   const result = await provider.complete(
     [

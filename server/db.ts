@@ -32,11 +32,79 @@ export async function getDb() {
   return _db;
 }
 
+// In-memory store fallback when MySQL database is not connected
+const memUsers: any[] = [
+  { id: 1, openId: "local-dev-user", name: "Reelio Creator", email: "creator@reelio.ai", role: "admin", loginMethod: "local", createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date() },
+];
+
+const memProjects: any[] = [
+  { id: 1, userId: 1, name: "YouTube Tech Review", status: "draft", description: "AI Video Editing Demo", createdAt: new Date(), updatedAt: new Date() },
+  { id: 2, userId: 1, name: "Video Project 10", status: "draft", description: "Complete browser AI video editing test", createdAt: new Date(), updatedAt: new Date() },
+];
+
+const memAssets: any[] = [
+  {
+    id: 1,
+    projectId: 2,
+    userId: 1,
+    name: "Video Project 10.mp4",
+    storageKey: "1/projects/2/assets/Video_Project_10.mp4",
+    url: "/uploads/Video_Project_10.mp4",
+    mimeType: "video/mp4",
+    sizeBytes: 91925378,
+    duration: 25.0,
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    hasAudio: true,
+    createdAt: new Date(),
+  },
+];
+
+const memClips: any[] = [
+  {
+    id: 1,
+    projectId: 2,
+    assetId: 1,
+    trackId: 0,
+    trackType: "video",
+    sourceStart: 0,
+    duration: 25.0,
+    timelineStart: 0,
+    sortIndex: 0,
+    locked: false,
+    visible: true,
+    muted: false,
+    createdAt: new Date(),
+  },
+];
+
+const memMarkers: any[] = [];
+const memCaptions: any[] = [];
+const memExports: any[] = [];
+
+let nextProjectId = 3;
+let nextAssetId = 2;
+let nextClipId = 2;
+let nextMarkerId = 1;
+let nextCaptionId = 1;
+let nextExportId = 1;
+
 /* ─── User helpers ─── */
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");
   const db = await getDb();
-  if (!db) { console.warn("[Database] Cannot upsert user: database not available"); return; }
+  if (!db) {
+    const existing = memUsers.find((u) => u.openId === user.openId);
+    if (existing) {
+      if (user.name !== undefined) existing.name = user.name;
+      if (user.email !== undefined) existing.email = user.email;
+      if (user.lastSignedIn !== undefined) existing.lastSignedIn = user.lastSignedIn;
+    } else {
+      memUsers.push({ id: memUsers.length + 1, ...user, createdAt: new Date(), updatedAt: new Date() });
+    }
+    return;
+  }
   try {
     const values: InsertUser = { openId: user.openId };
     const updateSet: Record<string, unknown> = {};
@@ -60,7 +128,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
 export async function getUserByOpenId(openId: string) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) return memUsers.find((u) => u.openId === openId);
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
@@ -68,7 +136,11 @@ export async function getUserByOpenId(openId: string) {
 /* ─── Project helpers ─── */
 export async function createProject(userId: number, name: string, description?: string) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const proj = { id: nextProjectId++, userId, name, status: "draft", description: description || null, createdAt: new Date(), updatedAt: new Date() };
+    memProjects.unshift(proj);
+    return proj;
+  }
   const result = await db.insert(projects).values({ userId, name, description });
   const id = Number(result[0]?.insertId ?? 0);
   const rows = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
@@ -77,20 +149,29 @@ export async function createProject(userId: number, name: string, description?: 
 
 export async function getUserProjects(userId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return memProjects.filter((p) => p.userId === userId);
   return db.select().from(projects).where(eq(projects.userId, userId)).orderBy(desc(projects.updatedAt));
 }
 
 export async function getProject(id: number, userId: number) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) return memProjects.find((p) => p.id === id && p.userId === userId);
   const result = await db.select().from(projects).where(and(eq(projects.id, id), eq(projects.userId, userId))).limit(1);
   return result[0];
 }
 
 export async function updateProject(id: number, userId: number, name?: string, status?: string, description?: string) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const proj = memProjects.find((p) => p.id === id && p.userId === userId);
+    if (proj) {
+      if (name !== undefined) proj.name = name;
+      if (status !== undefined) proj.status = status;
+      if (description !== undefined) proj.description = description;
+      proj.updatedAt = new Date();
+    }
+    return;
+  }
   const updateSet: Record<string, unknown> = {};
   if (name !== undefined) updateSet.name = name;
   if (status !== undefined) updateSet.status = status;
@@ -106,14 +187,22 @@ export async function duplicateProject(id: number, userId: number, name?: string
 
 export async function deleteProject(id: number, userId: number) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const idx = memProjects.findIndex((p) => p.id === id && p.userId === userId);
+    if (idx !== -1) memProjects.splice(idx, 1);
+    return;
+  }
   await db.delete(projects).where(and(eq(projects.id, id), eq(projects.userId, userId)));
 }
 
 /* ─── Asset helpers ─── */
 export async function createAsset(data: InsertAsset) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const asset = { id: nextAssetId++, ...data, createdAt: new Date() };
+    memAssets.push(asset);
+    return asset;
+  }
   const result = await db.insert(assets).values(data);
   const id = Number(result[0]?.insertId ?? 0);
   const rows = await db.select().from(assets).where(eq(assets.id, id)).limit(1);
@@ -122,20 +211,28 @@ export async function createAsset(data: InsertAsset) {
 
 export async function getProjectAssets(projectId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return memAssets.filter((a) => a.projectId === projectId);
   return db.select().from(assets).where(eq(assets.projectId, projectId)).orderBy(assets.createdAt);
 }
 
 export async function getAsset(id: number) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) return memAssets.find((a) => a.id === id);
   const result = await db.select().from(assets).where(eq(assets.id, id)).limit(1);
   return result[0];
 }
 
 export async function deleteAsset(id: number, userId: number) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const asset = memAssets.find((a) => a.id === id);
+    if (!asset) throw new Error("Asset not found");
+    const proj = memProjects.find((p) => p.id === asset.projectId);
+    if (!proj || proj.userId !== userId) throw new Error("Unauthorized: asset does not belong to this user");
+    const idx = memAssets.findIndex((a) => a.id === id);
+    if (idx !== -1) memAssets.splice(idx, 1);
+    return;
+  }
   const asset = await getAsset(id);
   if (!asset) throw new Error("Asset not found");
   const project = await db.select().from(projects).where(eq(projects.id, asset.projectId)).limit(1);
@@ -147,7 +244,11 @@ export async function deleteAsset(id: number, userId: number) {
 /* ─── Clip helpers ─── */
 export async function createClip(data: InsertClip) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const clip = { id: nextClipId++, ...data, createdAt: new Date() };
+    memClips.push(clip);
+    return clip;
+  }
   const result = await db.insert(clips).values(data);
   const id = Number(result[0]?.insertId ?? 0);
   const rows = await db.select().from(clips).where(eq(clips.id, id)).limit(1);
@@ -156,13 +257,17 @@ export async function createClip(data: InsertClip) {
 
 export async function getProjectClips(projectId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return memClips.filter((c) => c.projectId === projectId).sort((a, b) => a.sortIndex - b.sortIndex);
   return db.select().from(clips).where(eq(clips.projectId, projectId)).orderBy(clips.sortIndex);
 }
 
 export async function updateClip(id: number, updates: Partial<InsertClip>) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const clip = memClips.find((c) => c.id === id);
+    if (clip) Object.assign(clip, updates);
+    return;
+  }
   const updateSet: Record<string, unknown> = {};
   for (const key of ["sourceStart", "duration", "timelineStart", "sortIndex", "trackId", "trackType", "locked", "visible", "muted"] as const) {
     if (updates[key] !== undefined) updateSet[key] = updates[key];
@@ -172,15 +277,22 @@ export async function updateClip(id: number, updates: Partial<InsertClip>) {
 
 export async function getClip(id: number) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) return memClips.find((c) => c.id === id);
   const result = await db.select().from(clips).where(eq(clips.id, id)).limit(1);
   return result[0];
 }
 
 export async function deleteClip(id: number, userId: number) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  // Verify ownership via project
+  if (!db) {
+    const clip = memClips.find((c) => c.id === id);
+    if (!clip) throw new Error("Clip not found");
+    const proj = memProjects.find((p) => p.id === clip.projectId);
+    if (!proj || proj.userId !== userId) throw new Error("Unauthorized: clip does not belong to this user");
+    const idx = memClips.findIndex((c) => c.id === id);
+    if (idx !== -1) memClips.splice(idx, 1);
+    return;
+  }
   const clip = await getClip(id);
   if (!clip) throw new Error("Clip not found");
   const project = await db.select().from(projects).where(eq(projects.id, clip.projectId)).limit(1);
@@ -191,7 +303,11 @@ export async function deleteClip(id: number, userId: number) {
 /* ─── Marker helpers ─── */
 export async function createMarker(data: InsertMarker) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const marker = { id: nextMarkerId++, ...data, createdAt: new Date() };
+    memMarkers.push(marker);
+    return marker;
+  }
   const result = await db.insert(markers).values(data);
   const id = Number(result[0]?.insertId ?? 0);
   const rows = await db.select().from(markers).where(eq(markers.id, id)).limit(1);
@@ -200,20 +316,28 @@ export async function createMarker(data: InsertMarker) {
 
 export async function getProjectMarkers(projectId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return memMarkers.filter((m) => m.projectId === projectId).sort((a, b) => a.time - b.time);
   return db.select().from(markers).where(eq(markers.projectId, projectId)).orderBy(markers.time);
 }
 
 export async function deleteMarker(id: number) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const idx = memMarkers.findIndex((m) => m.id === id);
+    if (idx !== -1) memMarkers.splice(idx, 1);
+    return;
+  }
   await db.delete(markers).where(eq(markers.id, id));
 }
 
 /* ─── Caption helpers ─── */
 export async function createCaption(data: InsertCaption) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const cap = { id: nextCaptionId++, ...data, createdAt: new Date() };
+    memCaptions.push(cap);
+    return cap;
+  }
   const result = await db.insert(captions).values(data);
   const id = Number(result[0]?.insertId ?? 0);
   const rows = await db.select().from(captions).where(eq(captions.id, id)).limit(1);
@@ -222,20 +346,24 @@ export async function createCaption(data: InsertCaption) {
 
 export async function getProjectCaptions(projectId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return memCaptions.filter((c) => c.projectId === projectId).sort((a, b) => a.startTime - b.startTime);
   return db.select().from(captions).where(eq(captions.projectId, projectId)).orderBy(captions.startTime);
 }
 
 export async function getAssetCaptions(assetId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return memCaptions.filter((c) => c.assetId === assetId).sort((a, b) => a.startTime - b.startTime);
   return db.select().from(captions).where(eq(captions.assetId, assetId)).orderBy(captions.startTime);
 }
 
 /* ─── Export helpers ─── */
 export async function createExport(data: InsertExport) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const exp = { id: nextExportId++, ...data, createdAt: new Date() };
+    memExports.push(exp);
+    return exp;
+  }
   const result = await db.insert(exportsTable).values(data);
   const id = Number(result[0]?.insertId ?? 0);
   const rows = await db.select().from(exportsTable).where(eq(exportsTable.id, id)).limit(1);
@@ -244,13 +372,17 @@ export async function createExport(data: InsertExport) {
 
 export async function getProjectExports(projectId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return memExports.filter((e) => e.projectId === projectId);
   return db.select().from(exportsTable).where(eq(exportsTable.projectId, projectId)).orderBy(desc(exportsTable.createdAt));
 }
 
 export async function updateExport(id: number, updates: { status?: string; errorMessage?: string }) {
   const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  if (!db) {
+    const exp = memExports.find((e) => e.id === id);
+    if (exp) Object.assign(exp, updates);
+    return;
+  }
   const updateSet: Record<string, unknown> = {};
   if (updates.status !== undefined) updateSet.status = updates.status;
   if (updates.errorMessage !== undefined) updateSet.errorMessage = updates.errorMessage;

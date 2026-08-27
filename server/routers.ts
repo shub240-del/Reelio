@@ -153,6 +153,10 @@ export const appRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        const asset = await getAsset(input.id);
+        if (!asset) throw new TRPCError({ code: "NOT_FOUND", message: "Asset not found" });
+        const project = await getProject(asset.projectId, ctx.user.id);
+        if (!project) throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized: asset does not belong to this user" });
         await deleteAsset(input.id, ctx.user.id);
         return { success: true };
       }),
@@ -215,6 +219,10 @@ export const appRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        const clip = await getClip(input.id);
+        if (!clip) throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized: clip does not belong to this user" });
+        const project = await getProject(clip.projectId, ctx.user.id);
+        if (!project) throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized: clip does not belong to this user" });
         await deleteClip(input.id, ctx.user.id);
         return { success: true };
       }),

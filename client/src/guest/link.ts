@@ -124,6 +124,24 @@ export function hybridLink<TRouter extends AnyRouter>(opts: HybridLinkOptions): 
           if (cancelled) return;
 
           if (mode === "guest") {
+            // Server-side AI features delegate to the cloud backend so guest users can use real NVIDIA NIM reasoning
+            if (op.path.startsWith("ai.")) {
+              const sub = cloud({ op, next }).subscribe({
+                next: (value) => observer.next(value),
+                error: (err) => {
+                  if (op.path === "ai.health") {
+                    observer.next({ result: { type: "data", data: { available: false, provider: null } } });
+                    observer.complete();
+                  } else {
+                    observer.error(err);
+                  }
+                },
+                complete: () => observer.complete(),
+              });
+              unsubscribe = () => sub.unsubscribe();
+              return;
+            }
+
             if (!hasGuestProcedure(op.path)) {
               observer.error(
                 TRPCClientError.from(

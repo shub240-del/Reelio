@@ -300,3 +300,94 @@ export function describePlan(plan: EditPlan): string {
   if (plan.operations.length === 0) return "No changes";
   return plan.operations.map(describeOp).join(", ");
 }
+
+export interface ReviewRangeHighlight {
+  start: number;
+  end: number;
+  label: string;
+  type: string;
+}
+
+/**
+ * Extracts affected timeline time ranges for an operation, used by AI Review Mode
+ * to draw visual overlay stripes directly on the timeline ruler/tracks.
+ */
+export function getAffectedRanges(op: EditOp, clips: TimelineClip[]): ReviewRangeHighlight[] {
+  switch (op.type) {
+    case "removeRanges":
+      return op.ranges.map((r, idx) => ({
+        start: r.start,
+        end: r.end,
+        label: op.reason || `Cut #${idx + 1} (${(r.end - r.start).toFixed(1)}s)`,
+        type: "remove",
+      }));
+
+    case "keepRanges":
+      return op.ranges.map((r, idx) => ({
+        start: r.start,
+        end: r.end,
+        label: op.reason || `Keep #${idx + 1} (${(r.end - r.start).toFixed(1)}s)`,
+        type: "keep",
+      }));
+
+    case "removeClips": {
+      const highlights: ReviewRangeHighlight[] = [];
+      for (const id of op.clipIds) {
+        const c = clips.find((clip) => clip.id === id);
+        if (c) {
+          highlights.push({
+            start: c.timelineStart,
+            end: c.timelineStart + c.duration,
+            label: `Delete Clip ${c.id}`,
+            type: "remove",
+          });
+        }
+      }
+      return highlights;
+    }
+
+    case "splitClip": {
+      const c = clips.find((clip) => clip.id === op.clipId);
+      if (c) {
+        return [
+          {
+            start: Math.max(0, op.atTime - 0.1),
+            end: op.atTime + 0.1,
+            label: `Split @ ${op.atTime.toFixed(2)}s`,
+            type: "split",
+          },
+        ];
+      }
+      return [];
+    }
+
+    case "trimClip": {
+      const c = clips.find((clip) => clip.id === op.clipId);
+      if (c) {
+        if (op.edge === "start") {
+          return [
+            {
+              start: c.timelineStart,
+              end: Math.min(c.timelineStart + c.duration, op.toTime),
+              label: `Trim Start to ${op.toTime.toFixed(2)}s`,
+              type: "trim",
+            },
+          ];
+        } else {
+          return [
+            {
+              start: Math.max(c.timelineStart, op.toTime),
+              end: c.timelineStart + c.duration,
+              label: `Trim End to ${op.toTime.toFixed(2)}s`,
+              type: "trim",
+            },
+          ];
+        }
+      }
+      return [];
+    }
+
+    default:
+      return [];
+  }
+}

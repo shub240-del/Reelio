@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { applyEditOps, describePlan, editOpSchema, editPlanSchema, type EditOp } from "./editOps";
+import {
+  applyEditOps,
+  describePlan,
+  editOpSchema,
+  editPlanSchema,
+  getAffectedRanges,
+  type EditOp,
+} from "./editOps";
 import { normalizeTimeline, resetTempIds, timelineDuration, type TimelineAsset, type TimelineClip } from "./timeline";
 
 const ASSETS: Record<number, TimelineAsset> = {
@@ -181,3 +188,32 @@ describe("describePlan", () => {
     expect(describePlan({ summary: "s", operations: [] })).toBe("No changes");
   });
 });
+
+describe("getAffectedRanges", () => {
+  it("extracts highlighted ranges from removeRanges", () => {
+    const highlights = getAffectedRanges(
+      { type: "removeRanges", ranges: [{ start: 2.0, end: 4.5 }], reason: "Pause removal" },
+      base(),
+    );
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0]).toEqual({
+      start: 2.0,
+      end: 4.5,
+      label: "Pause removal",
+      type: "remove",
+    });
+  });
+
+  it("extracts highlighted ranges from splitClip and removeClips", () => {
+    const clips = base();
+    const splitHighlights = getAffectedRanges({ type: "splitClip", clipId: 1, atTime: 3.5 }, clips);
+    expect(splitHighlights).toHaveLength(1);
+    expect(splitHighlights[0].type).toBe("split");
+
+    const deleteHighlights = getAffectedRanges({ type: "removeClips", clipIds: [1] }, clips);
+    expect(deleteHighlights).toHaveLength(1);
+    expect(deleteHighlights[0].type).toBe("remove");
+    expect(deleteHighlights[0].start).toBe(clips[0].timelineStart);
+  });
+});
+

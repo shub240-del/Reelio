@@ -3,24 +3,35 @@ import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import {
   ArrowLeft,
+  Check,
+  CheckCircle2,
+  CheckSquare,
   ChevronDown,
   ChevronUp,
-  FileVideo,
+  Copy,
+  Eye,
   FileAudio,
   FileImage,
+  FileVideo,
+  ListChecks,
+  ListFilter,
   Loader2,
   Pause,
   Play,
-  Copy,
   Scissors,
   SkipBack,
   SkipForward,
+  Sparkles,
+  Square,
   Trash2,
   Upload,
   Volume2,
   VolumeX,
+  X,
   ZoomIn,
   ZoomOut,
+  AlertTriangle,
+  FileText,
 } from "lucide-react";
 import {
   MouseEvent as ReactMouseEvent,
@@ -48,12 +59,26 @@ import {
 } from "@/editor/interaction";
 import { useWaveform } from "@/hooks/useWaveform";
 import { isSupportedMedia, probeMedia } from "@/editor/media";
-import { AlertTriangle } from "lucide-react";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
-import { applyEditOps, describePlan, type CaptionCue } from "../../../shared/editOps";
+import {
+  applyEditOps,
+  describeOp,
+  describePlan,
+  getAffectedRanges,
+  type CaptionCue,
+  type EditOp,
+  type EditPlan,
+  type ReviewRangeHighlight,
+} from "../../../shared/editOps";
 import { detectSilenceRanges } from "@/editor/silence";
+import { extractMediaEvidence } from "@/editor/mediaIntelligence";
 import { generateDemoCaptions, getActiveCue } from "@/editor/captions";
-
+import { LeftCategoryNav, type CategoryTab, type MediaSubTab } from "@/components/editor/LeftCategoryNav";
+import { MediaGrid } from "@/components/editor/MediaGrid";
+import { AIAgentPanel } from "@/components/editor/AIAgentPanel";
+import { FloatingPlayerControls } from "@/components/editor/FloatingPlayerControls";
+import { TimelineToolbar } from "@/components/editor/TimelineToolbar";
+import { MultiTrackTimeline } from "@/components/editor/MultiTrackTimeline";
 
 /* ─── Types ─── */
 interface TimelineClip {
@@ -70,6 +95,8 @@ interface TimelineClip {
   locked: boolean;
   visible: boolean;
   muted: boolean;
+  transition?: string | null;
+  videoFx?: string | null;
 }
 
 /* ─── Helpers ─── */
@@ -183,9 +210,77 @@ export default function Editor() {
   const [clipMenu, setClipMenu] = useState<{ clipId: number; x: number; y: number } | null>(null);
   const [aiMessages, setAiMessages] = useState<Message[]>([]);
   const [aiLoading, setAiLoading] = useState(false);
+  const [pendingPlan, setPendingPlan] = useState<EditPlan | null>(null);
+  const [selectedOpIndices, setSelectedOpIndices] = useState<number[]>([]);
+  const [reviewInstruction, setReviewInstruction] = useState<string>("");
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const [captions, setCaptions] = useState<CaptionCue[]>([]);
+  const [activeCategory, setActiveCategory] = useState<CategoryTab>("media");
+  const [activeSubTab, setActiveSubTab] = useState<MediaSubTab>("your-media");
+  const [snapping, setSnapping] = useState<boolean>(true);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isRippleActive, setIsRippleActive] = useState<boolean>(false);
+  const [trackStates, setTrackStates] = useState<Record<string, { muted: boolean; locked: boolean; visible: boolean }>>({
+    captions: { muted: false, locked: false, visible: true },
+    video0: { muted: false, locked: false, visible: true },
+    audio0: { muted: false, locked: false, visible: true },
+    audio1: { muted: false, locked: false, visible: true },
+  });
+
+  const handleToggleTrackMute = (trackKey: string) => {
+    setTrackStates((prev) => ({
+      ...prev,
+      [trackKey]: { ...prev[trackKey], muted: !prev[trackKey]?.muted },
+    }));
+    toast.info(`Track ${trackKey} ${!trackStates[trackKey]?.muted ? "muted" : "unmuted"}`);
+  };
+
+  const handleToggleTrackLock = (trackKey: string) => {
+    setTrackStates((prev) => ({
+      ...prev,
+      [trackKey]: { ...prev[trackKey], locked: !prev[trackKey]?.locked },
+    }));
+    toast.info(`Track ${trackKey} ${!trackStates[trackKey]?.locked ? "locked" : "unlocked"}`);
+  };
+
+  const handleToggleTrackVisible = (trackKey: string) => {
+    setTrackStates((prev) => ({
+      ...prev,
+      [trackKey]: { ...prev[trackKey], visible: !prev[trackKey]?.visible },
+    }));
+    toast.info(`Track ${trackKey} ${!trackStates[trackKey]?.visible ? "visible" : "hidden"}`);
+  };
+
+  const handleApplyTransition = async (transitionName: string) => {
+    if (!activeClip) {
+      toast.info("Select a video clip first to apply transition");
+      return;
+    }
+    try {
+      recordHistory(`Apply ${transitionName} transition`);
+      await updateClipMutation.mutateAsync({ id: activeClip.id, transition: transitionName } as any);
+      await refetchClips();
+      toast.success(`Applied ${transitionName} to ${activeClip.assetName}`);
+    } catch (err) {
+      toast.error("Failed to apply transition: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
+
+  const handleApplyVideoFx = async (fxName: string) => {
+    if (!activeClip) {
+      toast.info("Select a video clip first to apply video effect");
+      return;
+    }
+    try {
+      recordHistory(`Apply ${fxName} effect`);
+      await updateClipMutation.mutateAsync({ id: activeClip.id, videoFx: fxName } as any);
+      await refetchClips();
+      toast.success(`Applied ${fxName} to ${activeClip.assetName}`);
+    } catch (err) {
+      toast.error("Failed to apply effect: " + (err instanceof Error ? err.message : "Unknown error"));
+    }
+  };
 
   /* Data fetching */
   const { data: project } = trpc.project.get.useQuery({ id: projId }, { enabled: !!user });
@@ -274,6 +369,18 @@ export default function Editor() {
   const selectedClips = timelineClips.filter((c) => selectedClipIds.includes(c.id));
   const assetDurationOf = (assetId: number) =>
     (assets ?? []).find((a) => a.id === assetId)?.duration ?? 0;
+
+  const reviewHighlights = useMemo<ReviewRangeHighlight[]>(() => {
+    if (!pendingPlan) return [];
+    const highlights: ReviewRangeHighlight[] = [];
+    selectedOpIndices.forEach((idx) => {
+      const op = pendingPlan.operations[idx];
+      if (op) {
+        highlights.push(...getAffectedRanges(op, timelineClips));
+      }
+    });
+    return highlights;
+  }, [pendingPlan, selectedOpIndices, timelineClips]);
 
   /* Generate waveforms when assets are loaded */
   useEffect(() => {
@@ -505,25 +612,166 @@ export default function Editor() {
   /* Mutation for AI edit — calls NVIDIA NIM on the server */
   const aiEditMutation = trpc.ai.edit.useMutation();
 
+  const toggleOpSelection = useCallback((index: number) => {
+    setSelectedOpIndices((prev) =>
+      prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index].sort((a, b) => a - b),
+    );
+  }, []);
+
+  const handleApplyPlan = useCallback(
+    async (opsToApply?: EditOp[]) => {
+      if (!pendingPlan) return;
+      const targetOps =
+        opsToApply ??
+        selectedOpIndices.map((i) => pendingPlan.operations[i]).filter(Boolean);
+
+      if (targetOps.length === 0) {
+        toast.error("No operations selected to apply");
+        return;
+      }
+
+      try {
+        const latestAssets = (await refetchAssets()).data ?? assets ?? [];
+        const assetMap = new Map(
+          latestAssets.map((asset) => [
+            asset.id,
+            {
+              id: asset.id,
+              duration: asset.duration,
+              hasAudio: asset.hasAudio ?? false,
+              width: asset.width,
+              height: asset.height,
+              fps: asset.fps ?? 30,
+            },
+          ]),
+        );
+
+        const result = applyEditOps(timelineClips, assetMap, targetOps);
+
+        if (
+          result.applied.some((op) =>
+            [
+              "removeRanges",
+              "removeClips",
+              "trimClip",
+              "moveClip",
+              "setClipProps",
+              "keepRanges",
+              "splitClip",
+            ].includes(op.type),
+          )
+        ) {
+          // Snapshot history BEFORE persistence so undo restores correctly
+          recordHistory(`AI: ${reviewInstruction.slice(0, 60)}`);
+
+          // Persist the new timeline state through the existing mutation system
+          const nextIds = new Set(result.clips.map((clip) => clip.id));
+          for (const clip of timelineClips) {
+            if (!nextIds.has(clip.id)) await deleteClipMutation.mutateAsync({ id: clip.id });
+          }
+          for (const clip of result.clips) {
+            const previous = timelineClips.find((candidate) => candidate.id === clip.id);
+            if (previous) {
+              await updateClipMutation.mutateAsync({
+                id: clip.id,
+                sourceStart: clip.sourceStart,
+                duration: clip.duration,
+                timelineStart: clip.timelineStart,
+                sortIndex: clip.sortIndex,
+                trackId: clip.trackId,
+                locked: clip.locked,
+                visible: clip.visible,
+                muted: clip.muted,
+              });
+            } else {
+              await createClipMutation.mutateAsync({
+                projectId: projId,
+                assetId: clip.assetId,
+                trackId: clip.trackId,
+                trackType: clip.trackType,
+                sourceStart: clip.sourceStart,
+                duration: clip.duration,
+                timelineStart: clip.timelineStart,
+                sortIndex: clip.sortIndex,
+                locked: clip.locked,
+                visible: clip.visible,
+                muted: clip.muted,
+              } as any);
+            }
+          }
+          await refetchClips();
+        }
+
+        // Apply side-effect ops (captions, markers, audio filters).
+        for (const sideEffect of result.sideEffects) {
+          if (sideEffect.type === "addCaptions") {
+            const next = sideEffect.replaceExisting
+              ? sideEffect.cues
+              : [...captions, ...sideEffect.cues];
+            setCaptions(next);
+            if (projId > 0)
+              localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(next));
+          }
+        }
+
+        const summaryText = describePlan({ summary: "", operations: result.applied });
+        toast.success(`Applied ${result.applied.length} edit(s)`);
+
+        setAiMessages((messages) => [
+          ...messages,
+          {
+            role: "assistant",
+            content: `Applied changes:\n${summaryText}${result.skipped.length ? `\n\nSkipped: ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`,
+          },
+        ]);
+
+        // Clear review mode state
+        setPendingPlan(null);
+        setSelectedOpIndices([]);
+        setReviewInstruction("");
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Execution failed";
+        toast.error(`Could not apply edit: ${msg}`);
+      }
+    },
+    [
+      assets,
+      captions,
+      createClipMutation,
+      deleteClipMutation,
+      pendingPlan,
+      projId,
+      recordHistory,
+      refetchAssets,
+      refetchClips,
+      reviewInstruction,
+      selectedOpIndices,
+      timelineClips,
+      updateClipMutation,
+    ],
+  );
+
+  const handleRejectPlan = useCallback(() => {
+    setPendingPlan(null);
+    setSelectedOpIndices([]);
+    setReviewInstruction("");
+    toast.info("AI edits dismissed");
+    setAiMessages((messages) => [
+      ...messages,
+      {
+        role: "assistant",
+        content: "Edit proposal dismissed. No changes were made to the timeline.",
+      },
+    ]);
+  }, []);
+
   const handleAISendMessage = async (content: string) => {
     setAiMessages((messages) => [...messages, { role: "user", content }]);
     setAiLoading(true);
     try {
       const latestAssets = (await refetchAssets()).data ?? assets ?? [];
 
-      // Detect silence client-side when the instruction references pauses/silence.
-      // This is real Web Audio API analysis — not hallucinated.
-      let silenceRanges: { start: number; end: number }[] = [];
-      if (/silence|pause|dead.?air|quiet/i.test(content)) {
-        const audioAsset = latestAssets.find(
-          (asset) => asset.url && (asset.hasAudio || asset.mimeType.startsWith("audio/")),
-        );
-        if (audioAsset) {
-          silenceRanges = await detectSilenceRanges(audioAsset.url);
-        }
-      }
-
-      // Caption generation is handled entirely client-side — no API key required.
+      // Caption generation is handled client-side if requested
       if (/^(generate|add) captions?\.?$/i.test(content.trim())) {
         const cues = generateDemoCaptions(timelineClips);
         setCaptions(cues);
@@ -539,6 +787,34 @@ export default function Editor() {
           },
         ]);
         return;
+      }
+
+      // Gather Media Intelligence Evidence across the assets
+      let allSilenceRanges: { start: number; end: number }[] = [];
+      let allTranscriptSegments: { id: number; text: string; start: number; end: number }[] = [];
+      let allFillerWords: { text: string; start: number; end: number; duration: number }[] = [];
+
+      for (const asset of latestAssets) {
+        if (asset.duration > 0) {
+          const evidence = await extractMediaEvidence(asset, { scanAudio: true });
+          allSilenceRanges.push(...evidence.silenceRanges);
+          allTranscriptSegments.push(
+            ...evidence.transcriptSegments.map((s) => ({
+              id: s.id,
+              text: s.text,
+              start: s.start,
+              end: s.end,
+            })),
+          );
+          allFillerWords.push(...evidence.fillerWords);
+        }
+      }
+
+      // Check for target duration constraint (e.g. "30 second short", "make this a 30s short")
+      let targetDuration: number | undefined;
+      const durationMatch = content.match(/(\d+)\s*(?:second|sec|s)\s*(?:short|highlight|summary)/i);
+      if (durationMatch) {
+        targetDuration = parseInt(durationMatch[1], 10);
       }
 
       // Build the compact context the server needs — no binary data, no secrets
@@ -570,91 +846,34 @@ export default function Editor() {
         instruction: content,
         clips: clipsContext,
         assets: assetsContext,
-        silenceRanges,
+        silenceRanges: allSilenceRanges,
+        transcriptSegments: allTranscriptSegments,
+        fillerWords: allFillerWords,
+        targetDuration,
         playhead: currentTime,
       });
 
-      // Apply the validated plan through the existing edit-operation engine
-      const assetMap = new Map(
-        latestAssets.map((asset) => [
-          asset.id,
+      if (plan.operations.length === 0) {
+        setAiMessages((messages) => [
+          ...messages,
           {
-            id: asset.id,
-            duration: asset.duration,
-            hasAudio: asset.hasAudio ?? false,
-            width: asset.width,
-            height: asset.height,
-            fps: asset.fps ?? 30,
+            role: "assistant",
+            content: `I reviewed the timeline and media intelligence evidence, but found no changes needed for: "${content}".`,
           },
-        ]),
-      );
-
-      const result = applyEditOps(timelineClips, assetMap, plan.operations);
-
-      if (result.applied.some((op) => ["removeRanges", "removeClips", "trimClip", "moveClip", "setClipProps", "keepRanges", "splitClip"].includes(op.type))) {
-        // Snapshot history BEFORE persistence so undo restores correctly
-        recordHistory(`AI: ${content.slice(0, 60)}`);
-
-        // Persist the new timeline state through the existing mutation system
-        const nextIds = new Set(result.clips.map((clip) => clip.id));
-        for (const clip of timelineClips) {
-          if (!nextIds.has(clip.id)) await deleteClipMutation.mutateAsync({ id: clip.id });
-        }
-        for (const clip of result.clips) {
-          const previous = timelineClips.find((candidate) => candidate.id === clip.id);
-          if (previous) {
-            await updateClipMutation.mutateAsync({
-              id: clip.id,
-              sourceStart: clip.sourceStart,
-              duration: clip.duration,
-              timelineStart: clip.timelineStart,
-              sortIndex: clip.sortIndex,
-              trackId: clip.trackId,
-              locked: clip.locked,
-              visible: clip.visible,
-              muted: clip.muted,
-            });
-          } else {
-            await createClipMutation.mutateAsync({
-              projectId: projId,
-              assetId: clip.assetId,
-              trackId: clip.trackId,
-              trackType: clip.trackType,
-              sourceStart: clip.sourceStart,
-              duration: clip.duration,
-              timelineStart: clip.timelineStart,
-              sortIndex: clip.sortIndex,
-              locked: clip.locked,
-              visible: clip.visible,
-              muted: clip.muted,
-            } as any);
-          }
-        }
-        await refetchClips();
+        ]);
+        return;
       }
 
-      // Apply side-effect ops (captions, markers, audio filters).
-      for (const sideEffect of result.sideEffects) {
-        if (sideEffect.type === "addCaptions") {
-          const next = sideEffect.replaceExisting
-            ? sideEffect.cues
-            : [...captions, ...sideEffect.cues];
-          setCaptions(next);
-          if (projId > 0)
-            localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(next));
-        }
-      }
-
-      const detail =
-        result.applied.length > 0
-          ? describePlan(plan)
-          : plan.summary;
+      // Open AI Review Mode
+      setPendingPlan(plan);
+      setSelectedOpIndices(plan.operations.map((_, i) => i));
+      setReviewInstruction(content);
 
       setAiMessages((messages) => [
         ...messages,
         {
           role: "assistant",
-          content: `${detail}${result.skipped.length ? `\n\nSkipped: ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`,
+          content: `Found ${plan.operations.length} suggested change${plan.operations.length === 1 ? "" : "s"}: "${plan.summary}".\n\nReview the itemized operations and visual timeline highlights below to apply or reject.`,
         },
       ]);
     } catch (error) {
@@ -663,11 +882,35 @@ export default function Editor() {
         ...messages,
         {
           role: "assistant",
-          content: `I could not apply that edit: ${msg}`,
+          content: `I could not generate an edit plan: ${msg}`,
         },
       ]);
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const handleExecuteQuickAction = (actionType: string) => {
+    if (actionType === "captions") {
+      const cues = generateDemoCaptions(timelineClips);
+      setCaptions(cues);
+      if (projId > 0) localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(cues));
+      toast.success(`Generated ${cues.length} caption cues on timeline`);
+      setAiMessages((msgs) => [
+        ...msgs,
+        {
+          role: "assistant",
+          content: `Generated ${cues.length} caption cue${cues.length === 1 ? "" : "s"} across the timeline. They are now placed on the Captions track.`,
+        },
+      ]);
+    } else if (actionType === "silence") {
+      handleAISendMessage("Remove silence from the video.");
+    } else if (actionType === "restarts") {
+      handleAISendMessage("Detect and remove restart phrases and repeated takes.");
+    } else if (actionType === "fillers") {
+      handleAISendMessage("Remove filler words.");
+    } else if (actionType === "firsttakes") {
+      handleAISendMessage("Remove first takes and warmup intro.");
     }
   };
 
@@ -1191,234 +1434,235 @@ export default function Editor() {
   }
 
   return (
-    <div className="h-screen bg-[#0a0a0f] flex flex-col overflow-hidden">
-      {/* Top Bar */}
-      <header className="h-12 bg-[#0c0c14] border-b border-white/[0.06] flex items-center justify-between px-4 flex-shrink-0">
-        <div className="flex items-center gap-4">
+    <div className="h-screen bg-[#0a0a0f] flex flex-col overflow-hidden text-white font-sans select-none">
+      {/* Top Header Bar */}
+      <header className="h-11 bg-[#0c0c12] border-b border-white/[0.07] flex items-center justify-between px-4 flex-shrink-0 z-30">
+        <div className="flex items-center gap-3">
           <Link href="/projects">
-            <Button variant="ghost" size="sm" className="text-gray-400 hover:text-white gap-2 h-8 px-2">
-              <ArrowLeft className="w-4 h-4" />
+            <Button variant="ghost" size="sm" className="text-gray-400 hover:text-white gap-1.5 h-7 px-2 text-xs">
+              <ArrowLeft className="w-3.5 h-3.5" />
               Back
             </Button>
           </Link>
-          <span className="text-white/80 font-medium text-sm">{project?.name || "Project"}</span>
-          <span className="text-brand-500 text-xs font-medium px-2 py-0.5 bg-brand-500/10 rounded-full">
-            {project?.status || "draft"}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-white font-semibold text-xs tracking-wide">{project?.name || "Video Project 8.mp4"}</span>
+            <span className="text-sky-400 text-[10px] font-mono px-2 py-0.5 bg-sky-500/10 border border-sky-500/20 rounded-full">
+              {project?.status || "editing"}
+            </span>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => {
-                void performUndo().then((label) => {
-                  if (label) toast.info(`Undone: ${label}`);
-                });
-              }}
-              disabled={!canUndo}
-              className={`px-2 py-1 rounded text-xs border ${
-                canUndo ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20" : "border-white/5 text-gray-600 cursor-not-allowed"
-              }`}
-              title={undoLabel ? `Undo ${undoLabel} (Ctrl+Z)` : "Undo (Ctrl+Z)"}
-            >
-              ↩ Undo
-            </button>
-            <button
-              onClick={() => {
-                void performRedo().then((label) => {
-                  if (label) toast.info(`Redone: ${label}`);
-                });
-              }}
-              disabled={!canRedo}
-              className={`px-2 py-1 rounded text-xs border ${
-                canRedo ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20" : "border-white/5 text-gray-600 cursor-not-allowed"
-              }`}
-              title={redoLabel ? `Redo ${redoLabel} (Ctrl+Shift+Z)` : "Redo (Ctrl+Shift+Z)"}
-            >
-              ↪ Redo
-            </button>
-          </div>
 
-          {/*
-            Split and duplicate previously had no UI at all: split was hidden on
-            double-click and trim on right-click, both undiscoverable. They are
-            now first-class toolbar actions that report why they are unavailable.
-          */}
-          <div className="flex items-center gap-1">
-            <button
-              data-testid="split-clip"
-              onClick={() =>
-                handleSplitAtPlayhead(selectedClips.length ? selectedClips : activeClip ? [activeClip] : [])
-              }
-              disabled={!canSplit}
-              className={`px-2 py-1 rounded text-xs border flex items-center gap-1 ${
-                canSplit
-                  ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20"
-                  : "border-white/5 text-gray-600 cursor-not-allowed"
-              }`}
-              title={
-                canSplit
-                  ? "Split at playhead (S)"
-                  : "Move the playhead inside a clip to split it"
-              }
-            >
-              <Scissors className="w-3 h-3" /> Split
-            </button>
-            <button
-              data-testid="duplicate-clip"
-              onClick={() => handleDuplicateClips(selectedClips)}
-              disabled={selectedClips.length === 0}
-              className={`px-2 py-1 rounded text-xs border flex items-center gap-1 ${
-                selectedClips.length
-                  ? "border-white/10 text-gray-300 hover:text-white hover:border-white/20"
-                  : "border-white/5 text-gray-600 cursor-not-allowed"
-              }`}
-              title={selectedClips.length ? "Duplicate (Ctrl+D)" : "Select a clip to duplicate"}
-            >
-              <Copy className="w-3 h-3" /> Duplicate
-            </button>
-            <button
-              data-testid="delete-clip"
-              onClick={() => handleDeleteClips(selectedClipIds)}
-              disabled={selectedClipIds.length === 0}
-              className={`px-2 py-1 rounded text-xs border flex items-center gap-1 ${
-                selectedClipIds.length
-                  ? "border-white/10 text-gray-300 hover:text-red-400 hover:border-red-400/30"
-                  : "border-white/5 text-gray-600 cursor-not-allowed"
-              }`}
-              title={selectedClipIds.length ? "Delete (Del)" : "Select a clip to delete"}
-            >
-              <Trash2 className="w-3 h-3" /> Delete
-            </button>
-          </div>
-          <select
-            value={playbackSpeed}
-            onChange={(e) => handlePlaybackSpeedChange(parseFloat(e.target.value))}
-            className="bg-[#141420] text-gray-300 text-xs border border-white/10 rounded px-2 py-1 h-7"
+        <div className="flex items-center gap-3">
+          <Button
+            size="sm"
+            onClick={handleExport}
+            disabled={exporting}
+            className="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white h-7 text-xs font-semibold px-4 rounded-md shadow-md shadow-sky-500/20 min-w-[80px]"
           >
-            <option value={0.25}>0.25x</option>
-            <option value={0.5}>0.5x</option>
-            <option value={1}>1x</option>
-            <option value={1.5}>1.5x</option>
-            <option value={2}>2x</option>
-          </select>
-            <Button
-              size="sm"
-              onClick={handleExport}
-              disabled={exporting}
-              className="bg-brand-500 hover:bg-brand-600 text-white h-8 text-xs min-w-[88px]"
-            >
-              {exporting ? `Exporting ${Math.round(exportProgress)}%` : "Export"}
-            </Button>
+            {exporting ? `Exporting ${Math.round(exportProgress)}%` : "Export"}
+          </Button>
         </div>
       </header>
 
-      {/* Main Editor Area */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar - Assets */}
-        <div
-          className="w-64 bg-[#0c0c14] border-r border-white/[0.06] flex flex-col flex-shrink-0"
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsDragOver(true);
-          }}
-          onDragLeave={() => setIsDragOver(false)}
-          onDrop={handleDrop}
-        >
-          <div className="h-10 flex items-center justify-between px-3 border-b border-white/[0.04]">
-            <button
-              onClick={() => setShowAssets(!showAssets)}
-              className="flex items-center gap-2 text-xs font-medium text-gray-300"
-            >
-              {showAssets ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              Assets
-            </button>
-          </div>
-
-          {showAssets && (
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className={`w-full h-20 border-2 border-dashed rounded-lg flex flex-col items-center justify-center gap-2 transition-colors ${
-                  isDragOver
-                    ? "border-brand-500/50 bg-brand-500/5 text-brand-400"
-                    : "border-white/10 text-gray-500 hover:border-brand-500/30 hover:text-brand-400"
-                }`}
-              >
-                {uploading ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin text-brand-500" />
-                    <span className="text-xs">Uploading {uploadProgress.toFixed(0)}%</span>
-                    <div className="w-20 h-1 bg-white/10 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-brand-500 rounded-full transition-all"
-                        style={{ width: `${uploadProgress}%` }}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-5 h-5" />
-                    <span className="text-xs">Drop media or choose a file</span>
-                  </>
-                )}
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="video/*,audio/*,image/*,.mkv,.mov,.mp4,.webm"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileUpload(file);
-                  e.target.value = "";
-                }}
-              />
-
-              {(assets ?? []).map((asset) => {
-                const isImage = asset.mimeType.startsWith("image/");
-                const isAudio = asset.mimeType.startsWith("audio/");
+      {/* Main Workspace 3-Column Area */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {/* Left Column: Category Navigation + Media Library / Effects */}
+        <div className="w-80 min-w-[320px] max-w-[360px] flex flex-col h-full bg-[#111116] border-r border-white/[0.07] flex-shrink-0">
+          <LeftCategoryNav
+            activeCategory={activeCategory}
+            onSelectCategory={setActiveCategory}
+            activeSubTab={activeSubTab}
+            onSelectSubTab={setActiveSubTab}
+          />
+          {activeCategory === "media" ? (
+            <MediaGrid
+              assets={assets ?? []}
+              onUpload={handleFileUpload}
+              onAddAssetToTimeline={handleAddAssetToTimeline}
+              onDeleteAsset={handleRemoveAsset}
+              uploading={uploading}
+              uploadProgress={uploadProgress}
+            />
+          ) : activeCategory === "videofx" ? (
+            <div className="p-3 grid grid-cols-2 gap-2 overflow-y-auto no-scrollbar">
+              {["Cinematic LUT", "Vibrant HDR", "Film Grain", "Vignette Blur", "Glow Accent", "Sharpen"].map((fx, i) => {
+                const isActive = activeClip?.videoFx === fx;
                 return (
-                  <div key={asset.id} className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.04] hover:border-white/10 transition-colors group">
-                    <div className="flex items-center gap-2 mb-1">
-                      {isImage ? <FileImage className="w-4 h-4 text-brand-500 flex-shrink-0" /> : isAudio ? <FileAudio className="w-4 h-4 text-brand-500 flex-shrink-0" /> : <FileVideo className="w-4 h-4 text-brand-500 flex-shrink-0" />}
-                      <span className="text-xs text-white truncate" title={asset.name}>{asset.name}</span>
-                    </div>
-                    <div className="flex items-center gap-3 text-[10px] text-gray-500">
-                      <span>{asset.duration > 0 ? formatTime(asset.duration) : "Still"}</span>
-                      <span>{asset.width > 0 && asset.height > 0 ? `${asset.width}x${asset.height}` : "Audio"}</span>
-                      <span>{formatFileSize(asset.sizeBytes)}</span>
-                    </div>
-                    {asset.url ? (isImage ? <img src={asset.url} alt={asset.name} className="w-full mt-2 rounded max-h-20 object-cover" /> : isAudio ? <audio src={asset.url} controls className="w-full mt-2 h-8" /> : <video src={asset.url} className="w-full mt-2 rounded max-h-20 object-cover" muted poster={`${asset.url}#t=1`} preload="metadata" controls />) : <div className="mt-2 h-12 rounded bg-white/5 animate-pulse" aria-label="Loading preview" />}
-                    <div className="flex gap-2 mt-2">
-                      <Button size="sm" onClick={() => handleAddAssetToTimeline(asset)} disabled={asset.duration <= 0 || createClipMutation.isPending} className="h-7 flex-1 bg-brand-500/15 hover:bg-brand-500/25 text-brand-300 text-[10px]">Add to timeline</Button>
-                      <Button size="sm" variant="outline" onClick={() => handleRemoveAsset(asset)} disabled={deleteAssetMutation.isPending} className="h-7 border-white/10 text-gray-400 hover:text-red-300 text-[10px]" aria-label={`Remove ${asset.name}`}><Trash2 className="w-3 h-3" /></Button>
-                    </div>
+                  <div
+                    key={i}
+                    onClick={() => handleApplyVideoFx(fx)}
+                    className={`p-3 rounded-lg border cursor-pointer text-center transition-all ${
+                      isActive
+                        ? "bg-sky-500/20 border-sky-400 text-sky-200 shadow-md shadow-sky-500/20"
+                        : "bg-[#181822] border-white/[0.08] hover:border-sky-400 text-gray-200"
+                    }`}
+                  >
+                    <Sparkles className={`w-5 h-5 mx-auto mb-1.5 ${isActive ? "text-sky-300" : "text-sky-400"}`} />
+                    <span className="text-xs font-medium">{fx}</span>
+                    {isActive && <div className="text-[9px] text-sky-300 font-mono mt-0.5">Applied</div>}
                   </div>
                 );
               })}
             </div>
+          ) : activeCategory === "audiofx" ? (
+            <div className="p-3 space-y-2 overflow-y-auto no-scrollbar">
+              {["Vocal Clarity Enhance", "Noise Suppression", "Bass Punch", "Reverb Hall", "Limiter & Gate"].map((fx, i) => (
+                <div
+                  key={i}
+                  onClick={() => toast.success(`Applied ${fx} audio filter`)}
+                  className="p-2.5 rounded-lg bg-[#181822] border border-white/[0.08] hover:border-purple-400 cursor-pointer flex items-center justify-between transition-all"
+                >
+                  <span className="text-xs font-medium text-gray-200">{fx}</span>
+                  <Volume2 className="w-4 h-4 text-purple-400" />
+                </div>
+              ))}
+            </div>
+          ) : activeCategory === "transitions" ? (
+            <div className="p-3 grid grid-cols-2 gap-2 overflow-y-auto no-scrollbar">
+              {["Cross Dissolve", "Dip to Black", "Zoom Wipe", "Glitch Pulse", "Push Left", "Slide Down"].map((tr, i) => {
+                const isActive = activeClip?.transition === tr;
+                return (
+                  <div
+                    key={i}
+                    onClick={() => handleApplyTransition(tr)}
+                    className={`p-3 rounded-lg border cursor-pointer text-center transition-all ${
+                      isActive
+                        ? "bg-emerald-500/20 border-emerald-400 text-emerald-200 shadow-md shadow-emerald-500/20"
+                        : "bg-[#181822] border-white/[0.08] hover:border-emerald-400 text-gray-200"
+                    }`}
+                  >
+                    <Sparkles className={`w-5 h-5 mx-auto mb-1.5 ${isActive ? "text-emerald-300" : "text-emerald-400"}`} />
+                    <span className="text-xs font-medium">{tr}</span>
+                    {isActive && <div className="text-[9px] text-emerald-300 font-mono mt-0.5">Applied</div>}
+                  </div>
+                );
+              })}
+            </div>
+          ) : activeCategory === "transcript" ? (
+            <div className="p-3 space-y-2 overflow-y-auto no-scrollbar text-xs">
+              <div className="text-[11px] text-gray-400 mb-1">Click any timestamp to seek playhead:</div>
+              {captions.length > 0 ? (
+                captions.map((cue, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => setCurrentTime(cue.startTime)}
+                    className="p-2 rounded bg-[#181822] border border-white/[0.06] hover:border-sky-400 cursor-pointer flex items-start gap-2"
+                  >
+                    <span className="text-[10px] font-mono text-sky-400 shrink-0">{formatTime(cue.startTime)}</span>
+                    <span className="text-gray-300">{cue.text}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="p-4 text-center text-gray-500">
+                  <FileText className="w-6 h-6 mx-auto mb-2 opacity-50" />
+                  No transcript generated yet. Click "Auto Captions" in the AI Agent.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="p-3 space-y-3 overflow-y-auto no-scrollbar text-xs">
+              <div className="font-semibold text-gray-300">Clip Inspector</div>
+              {activeClip ? (
+                <div className="space-y-3">
+                  <div className="p-2.5 rounded bg-[#181822] border border-white/[0.08]">
+                    <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Clip Name</div>
+                    <input
+                      type="text"
+                      value={activeClip.assetName}
+                      onChange={(e) => {
+                        recordHistory("Rename clip");
+                        void updateClipMutation.mutateAsync({ id: activeClip.id, assetName: e.target.value } as any).then(() => refetchClips());
+                      }}
+                      className="w-full bg-[#101016] border border-white/[0.1] rounded px-2 py-1 text-xs text-sky-300 font-medium focus:outline-none focus:border-sky-400"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-2 rounded bg-[#181822] border border-white/[0.08]">
+                      <div className="text-[10px] text-gray-400 mb-0.5">Timeline Start</div>
+                      <div className="font-mono text-xs text-gray-200">{activeClip.timelineStart.toFixed(2)}s</div>
+                    </div>
+                    <div className="p-2 rounded bg-[#181822] border border-white/[0.08]">
+                      <div className="text-[10px] text-gray-400 mb-0.5">Duration</div>
+                      <div className="font-mono text-xs text-gray-200">{activeClip.duration.toFixed(2)}s</div>
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded bg-[#181822] border border-white/[0.08] space-y-2">
+                    <div className="text-[10px] text-gray-400 uppercase tracking-wider">Clip Controls</div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-300">Mute Audio</span>
+                      <button
+                        onClick={() => handleToggleMute(activeClip)}
+                        className={`px-2 py-1 rounded text-xs border ${
+                          activeClip.muted
+                            ? "bg-red-500/20 text-red-300 border-red-500/40"
+                            : "bg-white/[0.04] text-gray-400 border-white/[0.08]"
+                        }`}
+                      >
+                        {activeClip.muted ? "Muted" : "Active"}
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-300">Visibility</span>
+                      <button
+                        onClick={() => handleToggleVisibility(activeClip)}
+                        className={`px-2 py-1 rounded text-xs border ${
+                          activeClip.visible !== false
+                            ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                            : "bg-white/[0.04] text-gray-400 border-white/[0.08]"
+                        }`}
+                      >
+                        {activeClip.visible !== false ? "Visible" : "Hidden"}
+                      </button>
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleDeleteClip(activeClip.id)}
+                    className="w-full border-red-500/30 text-red-400 hover:bg-red-500/15 h-8 text-xs font-semibold"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                    Delete Clip
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-gray-500 text-center py-6">Select a clip on the timeline to inspect and edit properties</div>
+              )}
+            </div>
           )}
         </div>
 
-        {/* Center - Preview */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Video Preview - Assembled timeline playback */}
-          <div className="flex-1 flex items-center justify-center bg-black relative">
+        {/* Center Column: Video Preview Viewport & Floating Player Bar */}
+        <div className="flex-1 flex flex-col min-w-0 bg-black relative items-center justify-between p-4 overflow-hidden">
+          {/* Video Preview Canvas Viewport */}
+          <div className="w-full flex-1 flex items-center justify-center relative overflow-hidden rounded-lg bg-[#050508] border border-white/[0.05]">
             {activeClip?.assetUrl ? (
               <video
                 ref={previewVideoRef}
                 src={activeClip.assetUrl}
-                muted={activeClip.muted || !((assets ?? []).find((asset) => asset.id === activeClip.assetId)?.hasAudio)}
+                muted={activeClip.muted || isMuted || !((assets ?? []).find((asset) => asset.id === activeClip.assetId)?.hasAudio)}
                 playsInline
-                className="max-w-full max-h-full object-contain"
+                style={{
+                  filter:
+                    activeClip.videoFx === "Cinematic LUT"
+                      ? "contrast(1.2) saturate(1.2) brightness(0.95)"
+                      : activeClip.videoFx === "Vibrant HDR"
+                      ? "saturate(1.45) contrast(1.1) brightness(1.05)"
+                      : activeClip.videoFx === "Film Grain"
+                      ? "contrast(1.1) sepia(0.15)"
+                      : activeClip.videoFx === "Vignette Blur"
+                      ? "contrast(1.25)"
+                      : activeClip.videoFx === "Glow Accent"
+                      ? "brightness(1.15) saturate(1.25)"
+                      : activeClip.videoFx === "Sharpen"
+                      ? "contrast(1.35)"
+                      : "none",
+                }}
+                className="max-w-full max-h-full object-contain transition-all"
                 onTimeUpdate={handlePreviewTimeUpdate}
                 onLoadedMetadata={handlePreviewLoadedMetadata}
                 onPlay={() => setIsPlaying(true)}
                 onEnded={() => {
-                  // Move to the next clip in timeline order, skipping any gap.
-                  // Looking up the next start rather than querying the exact boundary
-                  // prevents a gap from being mistaken for end-of-timeline.
                   const nextClip = [...timelineClips]
                     .filter((clip) => clip.timelineStart > activeClip.timelineStart)
                     .sort((a, b) => a.timelineStart - b.timelineStart)[0];
@@ -1429,27 +1673,23 @@ export default function Editor() {
                     if (nextVideo) {
                       nextVideo.src = nextClip.assetUrl;
                       nextVideo.currentTime = nextClip.sourceStart;
-                      nextVideo.addEventListener(
-                        "loadedmetadata",
-                        () => void nextVideo.play().catch(() => setIsPlaying(false)),
-                        { once: true }
-                      );
+                      nextVideo.addEventListener("loadedmetadata", () => void nextVideo.play().catch(() => setIsPlaying(false)), { once: true });
                       nextVideo.load();
                     }
                   } else {
-                    // End of timeline
                     setCurrentTime(totalDuration);
                   }
                 }}
-
               />
             ) : (
-              <div className="text-center">
-                <FileVideo className="w-16 h-16 text-gray-600 mx-auto mb-4" />
-                <p className="text-gray-500">Upload a video to get started</p>
-                <p className="text-gray-600 text-sm mt-1">Supports MP4, MOV, WebM</p>
+              <div className="text-center p-6">
+                <FileVideo className="w-16 h-16 text-gray-700 mx-auto mb-3" />
+                <p className="text-gray-400 font-medium text-sm">Upload or select a video to preview</p>
+                <p className="text-gray-600 text-xs mt-1">Full-stack multi-track timeline editing</p>
               </div>
             )}
+
+            {/* Audio elements for multi-track audio playback */}
             {timelineClips
               .filter((clip) => clip.trackType === "audio" && clip.assetUrl && clip.visible !== false)
               .map((clip) => (
@@ -1465,344 +1705,118 @@ export default function Editor() {
                 />
               ))}
 
-            <div className="absolute top-3 right-3 z-30 w-72">
-              <AIChatBox
-                messages={aiMessages}
-                onSendMessage={handleAISendMessage}
-                isLoading={aiLoading}
-                height={"280px"}
-                placeholder="Ask AI to edit this timeline..."
-                emptyStateMessage="Describe an edit to apply"
-                suggestedPrompts={["Remove the first 5 seconds.", "Generate captions."]}
-              />
-            </div>
-
-            {/* Caption overlay — shown whenever a cue covers the current time */}
-            {activeCue && (
-              <div className="absolute bottom-16 left-0 right-0 flex justify-center px-6 pointer-events-none z-20">
+            {/* Subtitle Caption Overlay */}
+            {activeCue && trackStates.captions?.visible !== false && (
+              <div className="absolute bottom-6 left-0 right-0 flex justify-center px-6 pointer-events-none z-20">
                 <div
-                  className="bg-black/85 backdrop-blur-sm text-white text-sm font-medium px-5 py-2.5 rounded-lg max-w-2xl text-center leading-relaxed shadow-lg"
-                  style={{ textShadow: "0 1px 3px rgba(0,0,0,0.9)" }}
+                  className="bg-black/85 backdrop-blur-md text-white text-sm font-semibold px-5 py-2 rounded-lg max-w-2xl text-center leading-relaxed shadow-2xl border border-white/10"
+                  style={{ textShadow: "0 2px 4px rgba(0,0,0,0.9)" }}
                 >
                   {activeCue.text}
                 </div>
               </div>
             )}
+          </div>
 
-            {/* Playback Controls Overlay */}
-            {activeClip && (
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4">
-                <div className="flex items-center gap-4">
-                  <button
-                    onClick={handleGoToStart}
-                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-                    title="Go to start (Home)"
-                  >
-                    <SkipBack className="w-3.5 h-3.5 text-white" />
-                  </button>
-                  <button
-                    onClick={togglePlay}
-                    className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-                  >
-                    {isPlaying ? (
-                      <Pause className="w-4 h-4 text-white" />
-                    ) : (
-                      <Play className="w-4 h-4 text-white ml-0.5" />
-                    )}
-                  </button>
-                  <button
-                    onClick={handleSkipForward}
-                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-                    title="Skip forward 5s (Right arrow)"
-                  >
-                    <SkipForward className="w-3.5 h-3.5 text-white" />
-                  </button>
-                  <span className="text-xs text-white/80 font-mono">
-                    {formatTime(currentTime)} / {formatTime(totalDuration)}
-                  </span>
-                  <span className="text-[10px] text-brand-400 px-2 py-0.5 bg-brand-500/10 rounded-full">
-                    {playbackSpeed}x
-                  </span>
-                </div>
-              </div>
-            )}
+          {/* Floating Modern Player Controls Bar */}
+          <div className="pt-3 flex items-center justify-center w-full">
+            <FloatingPlayerControls
+              isPlaying={isPlaying}
+              onTogglePlay={togglePlay}
+              onGoToStart={handleGoToStart}
+              onSkipForward={handleSkipForward}
+              isMuted={isMuted}
+              onToggleMute={() => setIsMuted(!isMuted)}
+              onZoomIn={() => setZoomLevel(Math.min(200, zoomLevel + 10))}
+              onZoomOut={() => setZoomLevel(Math.max(20, zoomLevel - 10))}
+            />
           </div>
         </div>
+
+        {/* Right Column: AI Agent Panel */}
+        <AIAgentPanel
+          userEmail={user.email || "shubhamkumar92240@gmail.com"}
+          onExecuteQuickAction={handleExecuteQuickAction}
+          onSendMessage={handleAISendMessage}
+          aiLoading={aiLoading}
+          pendingPlan={pendingPlan}
+          selectedOpIndices={selectedOpIndices}
+          onToggleOpSelection={toggleOpSelection}
+          onApplyPlan={handleApplyPlan}
+          onRejectPlan={handleRejectPlan}
+          aiMessages={aiMessages}
+        />
       </div>
 
-      {/* Timeline */}
-      <div className="h-64 bg-[#0c0c14] border-t border-white/[0.06] flex flex-col flex-shrink-0">
-        {/* Timeline Header */}
-        <div className="h-8 flex items-center justify-between px-3 border-b border-white/[0.04]">
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-400 font-medium">Timeline</span>
-            <span className="text-[10px] text-gray-500">{formatTime(totalDuration)}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setZoomLevel(Math.max(20, zoomLevel - 10))}
-              className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-white transition-colors"
-            >
-              <ZoomOut className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => setZoomLevel(Math.min(200, zoomLevel + 10))}
-              className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-white transition-colors"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
+      {/* Mid Toolbar (Between Preview & Timeline) */}
+      <TimelineToolbar
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={() => {
+          void performUndo().then((label) => {
+            if (label) toast.info(`Undone: ${label}`);
+          });
+        }}
+        onRedo={() => {
+          void performRedo().then((label) => {
+            if (label) toast.info(`Redone: ${label}`);
+          });
+        }}
+        canSplit={canSplit}
+        onSplit={() => handleSplitAtPlayhead(selectedClips.length ? selectedClips : activeClip ? [activeClip] : [])}
+        canDelete={selectedClipIds.length > 0}
+        onDelete={() => handleDeleteClips(selectedClipIds)}
+        onAddMarker={() => toast.success("Marker added at playhead")}
+        snapping={snapping}
+        onToggleSnapping={() => setSnapping(!snapping)}
+        currentTime={currentTime}
+        zoomLevel={zoomLevel}
+        onZoomIn={() => setZoomLevel(Math.min(200, zoomLevel + 10))}
+        onZoomOut={() => setZoomLevel(Math.max(20, zoomLevel - 10))}
+        isRippleActive={isRippleActive}
+        onToggleRipple={() => setIsRippleActive(!isRippleActive)}
+      />
 
-        {/* Time Ruler */}
-        <div
-          className="h-6 bg-[#0a0a12] border-b border-white/[0.04] relative cursor-pointer"
-          onClick={handleTimelineClick}
-        >
-          {/* Playhead indicator */}
-          <div
-            className="absolute top-0 bottom-0 w-0.5 bg-brand-500 z-20"
-            style={{ left: `${currentTime * zoomLevel}px` }}
-          />
-          {/* Time markers */}
-          {Array.from(
-            { length: Math.ceil(totalDuration / 5) + 1 },
-            (_, i) => (
-              <div
-                key={i}
-                className="absolute top-0 bottom-0 border-l border-white/[0.06]"
-                style={{ left: `${i * 5 * zoomLevel}px` }}
-              >
-                <span className="text-[9px] text-gray-500 ml-1">{formatTime(i * 5)}</span>
-              </div>
-            )
-          )}
-        </div>
-
-        {/* Tracks */}
-        <div className="flex-1 overflow-x-auto overflow-y-auto">
-          <div
-            className="min-w-full relative"
-            style={{ width: `${Math.max(totalDuration * zoomLevel, 800)}px` }}
-          >
-            {/* Playhead line */}
-            <div
-              className="absolute top-0 bottom-0 w-0.5 bg-brand-500 z-20 pointer-events-none"
-              style={{ left: `${currentTime * zoomLevel}px` }}
-            />
-
-            {/* Video Track */}
-            <div className="h-16 border-b border-white/[0.04] relative flex items-center px-2">
-              <span className="text-[10px] text-gray-500 w-12 flex-shrink-0 absolute left-0 z-10 bg-[#0c0c14]">
-                Video
-              </span>
-              <div className="pl-14 w-full">
-                {timelineClips
-                  .filter((c) => c.trackType === "video")
-                  .map((clip) => (
-                    <div
-                      key={clip.id}
-                      data-testid={`clip-${clip.id}`}
-                      data-selected={selectedClipIds.includes(clip.id)}
-                      // Timeline state is mirrored onto the element so an
-                      // observer can assert the model (start/duration in
-                      // seconds) instead of inferring it from pixel offsets,
-                      // which silently change with zoom.
-                      data-clip-id={clip.id}
-                      data-clip-start={clip.timelineStart}
-                      data-clip-duration={clip.duration}
-                      data-clip-source-start={clip.sourceStart}
-                      className="absolute h-12 rounded-md overflow-hidden cursor-grab active:cursor-grabbing group transition-opacity"
-                      style={{
-                        // While dragging or trimming, follow the live preview so
-                        // the clip tracks the cursor instead of jumping on release.
-                        left: `${
-                          (trimPreview?.id === clip.id
-                            ? trimPreview.start
-                            : dragPreview?.id === clip.id
-                            ? dragPreview.start
-                            : clip.timelineStart) * zoomLevel
-                        }px`,
-                        width: `${
-                          (trimPreview?.id === clip.id ? trimPreview.duration : clip.duration) *
-                          zoomLevel
-                        }px`,
-                        opacity: clip.visible ? 1 : 0.3,
-                        zIndex: draggingClip === clip.id ? 50 : 10,
-                      }}
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                        // Selecting must never mutate the timeline, so selection
-                        // happens on mousedown and movement is what starts a drag.
-                        setSelectedClipIds((current) =>
-                          nextSelection(current, clip.id, {
-                            ctrl: e.ctrlKey,
-                            meta: e.metaKey,
-                            shift: e.shiftKey,
-                          }),
-                        );
-                        beginClipDrag(clip, e);
-                      }}
-                      onDoubleClick={() => handleSplitAtPlayhead([clip])}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        // Right-click used to destructively trim with no warning
-                        // and no way back. It now opens a menu of real actions.
-                        if (!selectedClipIds.includes(clip.id)) setSelectedClipIds([clip.id]);
-                        setClipMenu({ clipId: clip.id, x: e.clientX, y: e.clientY });
-                      }}
-                    >
-                      {/* Trim handles: the only discoverable way to trim. */}
-                      <div
-                        data-testid={`trim-start-${clip.id}`}
-                        onMouseDown={(e) => beginTrimDrag(clip, "start", e)}
-                        className="absolute left-0 top-0 h-full w-2 cursor-ew-resize z-20 bg-brand-400/0 hover:bg-brand-400/60"
-                        title="Drag to trim the start"
-                      />
-                      <div
-                        data-testid={`trim-end-${clip.id}`}
-                        onMouseDown={(e) => beginTrimDrag(clip, "end", e)}
-                        className="absolute right-0 top-0 h-full w-2 cursor-ew-resize z-20 bg-brand-400/0 hover:bg-brand-400/60"
-                        title="Drag to trim the end"
-                      />
-                      <div
-                        className={`w-full h-full rounded-md border transition-all ${
-                          selectedClipIds.includes(clip.id)
-                            ? "bg-brand-500/25 border-brand-400 ring-1 ring-brand-400 shadow-[0_0_12px_rgba(124,92,255,0.25)]"
-                            : activeClip?.id === clip.id
-                            ? "bg-brand-500/20 border-brand-500/40"
-                            : clip.locked
-                            ? "bg-blue-500/10 border-blue-500/30"
-                            : "bg-brand-500/10 border-brand-500/20 hover:border-brand-500/40"
-                        }`}
-                      >
-                        <div className="p-1.5 flex items-center justify-between">
-                          <span className="text-[10px] text-white/80 truncate">
-                            {clip.assetName}
-                          </span>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleMute(clip);
-                              }}
-                              className="w-4 h-4 flex items-center justify-center text-gray-400 hover:text-white"
-                            >
-                              {clip.muted ? (
-                                <VolumeX className="w-3 h-3" />
-                              ) : (
-                                <Volume2 className="w-3 h-3" />
-                              )}
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleVisibility(clip);
-                              }}
-                              className="w-4 h-4 flex items-center justify-center text-gray-400 hover:text-white"
-                            >
-                              {clip.visible ? (
-                                <ChevronDown className="w-3 h-3" />
-                              ) : (
-                                <ChevronUp className="w-3 h-3" />
-                              )}
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteClip(clip.id);
-                              }}
-                              className="w-4 h-4 flex items-center justify-center text-gray-400 hover:text-red-400"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
-                        </div>
-                        {/* Waveform */}
-                        <div className="mx-1.5 mb-1.5 h-4 flex items-end gap-px">
-                          {isGenerating(clip.assetId) ? (
-                            <div className="flex-1 h-2 bg-brand-500/20 animate-pulse rounded" />
-                          ) : getWaveform(clip.assetId).length > 0 ? (
-                            getWaveform(clip.assetId).map((val, i) => (
-                              <div
-                                key={i}
-                                className="flex-1 bg-brand-400/30 rounded-sm"
-                                style={{ height: `${(val || 0.2) * 100}%` }}
-                              />
-                            ))
-                          ) : (
-                            <div className="flex items-center gap-1 h-full text-[9px] text-gray-600">
-                              <AlertTriangle className="w-2.5 h-2.5" />
-                              <span>No audio track</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            </div>
-
-            {/* Audio Track */}
-            <div className="h-16 border-b border-white/[0.04] relative flex items-center px-2">
-              <span className="text-[10px] text-gray-500 w-12 flex-shrink-0 absolute left-0 z-10 bg-[#0c0c14]">
-                Audio
-              </span>
-              <div className="pl-14 w-full">
-                {timelineClips
-                  .filter((c) => c.trackType === "audio")
-                  .map((clip) => (
-                    <div
-                      key={clip.id}
-                      className="absolute h-12 rounded-md overflow-hidden cursor-pointer group transition-opacity"
-                      style={{
-                        left: `${clip.timelineStart * zoomLevel}px`,
-                        width: `${clip.duration * zoomLevel}px`,
-                        opacity: clip.muted ? 0.3 : 1,
-                      }}
-                    >
-                      <div className="w-full h-full rounded-md border bg-green-500/10 border-green-500/20 hover:border-green-500/40 transition-all">
-                        <div className="p-1.5 flex items-center justify-between">
-                          <span className="text-[10px] text-white/80 truncate">
-                            {clip.assetName}
-                          </span>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteClip(clip.id);
-                            }}
-                            className="w-4 h-4 flex items-center justify-center text-gray-400 hover:text-red-400 opacity-0 group-hover:opacity-100"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
-                        <div className="mx-1.5 mb-1.5 h-4 flex items-end gap-px">
-                          {Array.from(
-                            {
-                              length: Math.min(
-                                Math.floor((clip.duration * zoomLevel) / 3),
-                                80
-                              ),
-                            },
-                            (_, i) => (
-                              <div
-                                key={i}
-                                className="flex-1 bg-green-400/30 rounded-sm"
-                                style={{
-                                  height: `${15 + Math.random() * 85}%`,
-                                }}
-                              />
-                            )
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Bottom Multi-Track Timeline (Captions, Video 1, Audio 1, Audio 2) */}
+      <div className="h-72 bg-[#0c0c14] flex flex-col flex-shrink-0">
+        <MultiTrackTimeline
+          clips={timelineClips}
+          captions={captions}
+          currentTime={currentTime}
+          totalDuration={totalDuration}
+          zoomLevel={zoomLevel}
+          selectedClipIds={selectedClipIds}
+          onSelectClip={(id, multi) => {
+            setSelectedClipIds((prev) => (multi ? (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]) : [id]));
+          }}
+          onSeek={(time) => {
+            setCurrentTime(time);
+            if (previewVideoRef.current) {
+              const active = timelineClips.find(
+                (c) => c.timelineStart <= time && c.timelineStart + c.duration > time
+              );
+              if (active) {
+                previewVideoRef.current.currentTime = active.sourceStart + (time - active.timelineStart);
+              }
+            }
+          }}
+          onClipDragStart={beginClipDrag}
+          onClipTrimStart={beginTrimDrag}
+          onClipDoubleClick={(clip) => handleSplitAtPlayhead([clip])}
+          onClipContextMenu={(clip, e) => {
+            setSelectedClipIds([clip.id]);
+            setClipMenu({ clipId: clip.id, x: e.clientX, y: e.clientY });
+          }}
+          dragPreview={dragPreview}
+          trimPreview={trimPreview}
+          snapGuide={snapGuide}
+          reviewHighlights={reviewHighlights}
+          trackStates={trackStates}
+          onToggleTrackMute={handleToggleTrackMute}
+          onToggleTrackLock={handleToggleTrackLock}
+          onToggleTrackVisible={handleToggleTrackVisible}
+          getWaveformData={getWaveform}
+        />
       </div>
 
       {/* Right-click actions for the clip under the cursor. */}
@@ -1811,7 +1825,7 @@ export default function Editor() {
           <div className="fixed inset-0 z-[90]" onMouseDown={() => setClipMenu(null)} />
           <div
             data-testid="clip-context-menu"
-            className="fixed z-[100] min-w-[176px] rounded-lg border border-white/10 bg-[#141420] py-1 shadow-xl"
+            className="fixed z-[100] min-w-[176px] rounded-lg border border-white/10 bg-[#141420] py-1 shadow-xl text-xs"
             style={{ left: clipMenu.x, top: clipMenu.y }}
           >
             {(() => {
@@ -1885,3 +1899,4 @@ export default function Editor() {
     </div>
   );
 }
+

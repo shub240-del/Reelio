@@ -47,10 +47,10 @@ export interface AIProvider {
 const NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
 /**
- * Default model: meta/llama-3.3-70b-instruct (currently supported NIM model).
+ * Default model: meta/llama-3.2-11b-vision-instruct (active, fast NVIDIA NIM model).
  * JSON-structured output is critical for the edit-plan workflow.
  */
-const DEFAULT_NVIDIA_MODEL = "meta/llama-3.3-70b-instruct";
+const DEFAULT_NVIDIA_MODEL = "meta/llama-3.2-11b-vision-instruct";
 
 class NvidiaNIMProvider implements AIProvider {
   private readonly apiKey: string;
