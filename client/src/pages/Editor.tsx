@@ -769,6 +769,59 @@ export default function Editor() {
     setAiMessages((messages) => [...messages, { role: "user", content }]);
     setAiLoading(true);
     try {
+      const lower = content.trim().toLowerCase();
+
+      // Conversational Undo / Redo / Export shortcuts
+      if (lower === "undo" || lower === "revert" || lower === "ctrl+z" || lower === "undo that" || lower === "undo last edit") {
+        const label = await performUndo();
+        setAiMessages((msgs) => [
+          ...msgs,
+          {
+            role: "assistant",
+            content: label ? `Undone: ${label}. Timeline restored to previous state.` : "Nothing to undo in timeline history.",
+          },
+        ]);
+        return;
+      }
+
+      if (lower === "redo" || lower === "ctrl+y" || lower === "redo that" || lower === "redo last edit") {
+        const label = await performRedo();
+        setAiMessages((msgs) => [
+          ...msgs,
+          {
+            role: "assistant",
+            content: label ? `Redone: ${label}. Timeline restored.` : "Nothing to redo in timeline history.",
+          },
+        ]);
+        return;
+      }
+
+      if (lower.includes("clear") && (lower.includes("caption") || lower.includes("subtitle"))) {
+        setCaptions([]);
+        if (projId > 0) localStorage.removeItem(`reelio-captions-${projId}`);
+        toast.info("Cleared caption cues");
+        setAiMessages((msgs) => [
+          ...msgs,
+          {
+            role: "assistant",
+            content: "Cleared all caption cues from the Captions track.",
+          },
+        ]);
+        return;
+      }
+
+      if (lower === "export" || lower === "export video" || lower === "render video") {
+        void handleExport();
+        setAiMessages((msgs) => [
+          ...msgs,
+          {
+            role: "assistant",
+            content: "Started browser video export for the current timeline composition.",
+          },
+        ]);
+        return;
+      }
+
       const latestAssets = (await refetchAssets()).data ?? assets ?? [];
 
       // Caption generation is handled client-side if requested
@@ -782,7 +835,7 @@ export default function Editor() {
             role: "assistant",
             content:
               cues.length > 0
-                ? `Generated ${cues.length} caption cue${cues.length === 1 ? "" : "s"} across the timeline. They are now visible in the preview.`
+                ? `Generated ${cues.length} caption cue${cues.length === 1 ? "" : "s"} across the timeline. They are now visible on the Captions track.`
                 : "No clips on the timeline to generate captions for.",
           },
         ]);
@@ -858,7 +911,7 @@ export default function Editor() {
           ...messages,
           {
             role: "assistant",
-            content: `I reviewed the timeline and media intelligence evidence, but found no changes needed for: "${content}".`,
+            content: `I reviewed the timeline and media intelligence evidence (${allSilenceRanges.length} silence intervals, ${allFillerWords.length} filler words, ${allTranscriptSegments.length} transcript segments), but found no operations required for: "${content}".`,
           },
         ]);
         return;
@@ -873,7 +926,7 @@ export default function Editor() {
         ...messages,
         {
           role: "assistant",
-          content: `Found ${plan.operations.length} suggested change${plan.operations.length === 1 ? "" : "s"}: "${plan.summary}".\n\nReview the itemized operations and visual timeline highlights below to apply or reject.`,
+          content: `🎯 **AI Edit Plan Proposed**\n\n${plan.summary}\n\n• **Itemized Operations**: ${plan.operations.length} change${plan.operations.length === 1 ? "" : "s"}\n• **Evidence Grounded**: Analyzed ${allSilenceRanges.length} silence intervals and ${allFillerWords.length} filler words.\n\nReview the visual highlights on your timeline and click **Apply Selected** or **Apply All** to commit.`,
         },
       ]);
     } catch (error) {

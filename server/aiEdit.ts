@@ -101,12 +101,12 @@ export type AIEditRequest = z.infer<typeof aiEditRequestSchema>;
 
 function buildSystemPrompt(): string {
   return `You are Reelio's AI video-editing assistant powered by NVIDIA NIM reasoning.
-You receive real media intelligence evidence (timeline clips, transcript segments, detected silence intervals, filler-word timestamps) and a user instruction.
+You receive real media intelligence evidence (timeline clips, transcript segments, detected silence intervals, filler-word timestamps, playhead time) and a user editing instruction.
 You must reason strictly over the provided evidence and return a validated JSON edit plan.
 
 RESPONSE FORMAT — you must return valid JSON only, no prose, no markdown fences:
 {
-  "summary": "<one sentence describing the plan>",
+  "summary": "<clear, honest, concise description of all changes and exact time saved>",
   "operations": [ ... ]
 }
 
@@ -117,7 +117,9 @@ OPERATION TYPES (use only these):
    Use for:
    - "Remove long pauses / silence": use the exact DETECTED SILENCE RANGES provided.
    - "Remove filler words": use the exact DETECTED FILLER WORDS ranges provided.
-   - "Remove the first X seconds": {"type":"removeRanges","ranges":[{"start":0,"end":X}],"reason":"Remove initial segment"}
+   - "Remove first X seconds / Cut intro": {"type":"removeRanges","ranges":[{"start":0,"end":X}],"reason":"Remove initial segment"}
+   - "Remove last X seconds / Cut outro": {"type":"removeRanges","ranges":[{"start":<totalDuration - X>,"end":<totalDuration>}],"reason":"Remove ending segment"}
+   - "Detect and remove restart phrases / false takes": identify earlier failed attempts in transcript and remove them.
 
 2. keepRanges — keep only specified key highlight spans (inverse cut, for short-form summaries):
    {"type":"keepRanges","ranges":[{"start":<sec>,"end":<sec>}],"reason":"<why>"}
@@ -135,7 +137,7 @@ OPERATION TYPES (use only these):
 
 6. splitClip — split one clip into two:
    {"type":"splitClip","clipId":<int>,"atTime":<sec>}
-   Use for: "Split this clip at playhead" -> split at the provided playhead time if it intersects a clip.
+   Use for: "Split this clip at playhead" -> split at the provided playhead time if it intersects a clip. Or at specific timestamp.
 
 7. setClipProps — change clip visibility/mute/lock:
    {"type":"setClipProps","clipId":<int>,"visible":<bool>,"muted":<bool>}
@@ -147,10 +149,8 @@ CRITICAL RULES:
 - All times are in seconds (floating point numbers).
 - clipId must be an integer that exists in the provided clip list.
 - For removeRanges and keepRanges, start must be < end and both >= 0.
-- NEVER invent timestamps or clip IDs.
-- For "Remove long pauses", map directly to the provided DETECTED SILENCE RANGES.
-- For "Remove filler words", map directly to the provided DETECTED FILLER WORDS.
-- Return ONLY the JSON object — no explanation text outside the JSON.`;
+- For "summary", state clearly the exact timestamps affected and time saved.
+- Return ONLY the raw JSON object — no explanation text outside the JSON.`;
 }
 
 function buildUserPrompt(req: AIEditRequest): string {
