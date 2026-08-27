@@ -50,9 +50,10 @@ import { useWaveform } from "@/hooks/useWaveform";
 import { isSupportedMedia, probeMedia } from "@/editor/media";
 import { AlertTriangle } from "lucide-react";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
-import { applyEditOps, describePlan } from "../../../shared/editOps";
-import { planEditorRequest } from "@/editor/ai";
+import { applyEditOps, describePlan, type CaptionCue } from "../../../shared/editOps";
 import { detectSilenceRanges } from "@/editor/silence";
+import { generateDemoCaptions, getActiveCue } from "@/editor/captions";
+
 
 /* ─── Types ─── */
 interface TimelineClip {
@@ -183,6 +184,8 @@ export default function Editor() {
   const [aiMessages, setAiMessages] = useState<Message[]>([]);
   const [aiLoading, setAiLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [captions, setCaptions] = useState<CaptionCue[]>([]);
 
   /* Data fetching */
   const { data: project } = trpc.project.get.useQuery({ id: projId }, { enabled: !!user });
@@ -267,6 +270,7 @@ export default function Editor() {
   clipsRef.current = timelineClips;
 
   const totalDuration = computeTotalDuration(timelineClips);
+  const activeCue = getActiveCue(captions, currentTime);
   const selectedClips = timelineClips.filter((c) => selectedClipIds.includes(c.id));
   const assetDurationOf = (assetId: number) =>
     (assets ?? []).find((a) => a.id === assetId)?.duration ?? 0;
@@ -281,6 +285,19 @@ export default function Editor() {
       }
     }
   }, [assets]);
+
+  /* Restore captions from localStorage on mount */
+  useEffect(() => {
+    if (projId > 0) {
+      try {
+        const stored = localStorage.getItem(`reelio-captions-${projId}`);
+        if (stored) setCaptions(JSON.parse(stored) as CaptionCue[]);
+      } catch {
+        /* corrupt storage — ignore */
+      }
+    }
+  }, [projId]);
+
   const activeClip = getActiveClip(timelineClips, currentTime);
   const activeAudioClips = timelineClips.filter(
     (clip) =>
@@ -314,7 +331,9 @@ export default function Editor() {
 
   const handleExport = async () => {
     if (exporting || timelineClips.length === 0) return;
-    const videoClips = timelineClips.filter((clip) => clip.trackType === "video" && clip.visible !== false && clip.duration > 0);
+    const videoClips = timelineClips.filter(
+      (clip) => clip.trackType === "video" && clip.visible !== false && clip.duration > 0,
+    );
     if (videoClips.length === 0) {
       toast.error("Add a visible video clip before exporting");
       return;
@@ -325,31 +344,89 @@ export default function Editor() {
       return;
     }
     setExporting(true);
+    setExportProgress(0);
     try {
       const canvas = document.createElement("canvas");
       canvas.width = firstAsset.width || 1280;
       canvas.height = firstAsset.height || 720;
-      const context = canvas.getContext("2d");
-      if (!context || typeof canvas.captureStream !== "function" || typeof MediaRecorder === "undefined") {
+      const ctx2d = canvas.getContext("2d");
+      if (!ctx2d || typeof canvas.captureStream !== "function" || typeof MediaRecorder === "undefined") {
         throw new Error("This browser does not support browser-side video export");
       }
-      const stream = canvas.captureStream(30);
+
+      // ── Audio mixing setup (gracefully omitted if AudioContext is unavailable) ──
+      const AudioCtor =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      const audioCtx = AudioCtor ? new AudioCtor() : null;
+      const audioDest = audioCtx?.createMediaStreamDestination() ?? null;
+
+      type AudioEntry = { el: HTMLAudioElement; clip: TimelineClip };
+      const audioEntries: AudioEntry[] = [];
+
+      if (audioCtx && audioDest) {
+        const audibleClips = timelineClips.filter((c) => {
+          if (c.muted || c.visible === false || !c.assetUrl) return false;
+          const asset = (assets ?? []).find((a) => a.id === c.assetId);
+          return c.trackType === "audio" || asset?.hasAudio;
+        });
+        for (const clip of audibleClips) {
+          try {
+            const el = document.createElement("audio");
+            el.crossOrigin = "anonymous";
+            el.src = clip.assetUrl;
+            el.preload = "auto";
+            await new Promise<void>((resolve) => {
+              el.addEventListener("loadedmetadata", () => resolve(), { once: true });
+              el.addEventListener("error", () => resolve(), { once: true }); // non-fatal
+              setTimeout(resolve, 3000);
+            });
+            const srcNode = audioCtx.createMediaElementSource(el);
+            srcNode.connect(audioDest);
+            audioEntries.push({ el, clip });
+          } catch {
+            // Non-decodable audio clip — skip gracefully
+          }
+        }
+      }
+
+      // ── Combined stream & recorder ──
+      const canvasStream = canvas.captureStream(30);
+      const streamTracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
+      if (audioDest) streamTracks.push(...audioDest.stream.getAudioTracks());
+      const recordStream = new MediaStream(streamTracks);
+
+      const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+        ? "video/webm;codecs=vp9"
+        : "video/webm";
       const chunks: Blob[] = [];
-      const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
-      recorder.ondataavailable = (event) => { if (event.data.size > 0) chunks.push(event.data); };
+      const recorder = new MediaRecorder(recordStream, { mimeType });
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
       const stopped = new Promise<Blob>((resolve) => {
         recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType }));
       });
+
       const source = document.createElement("video");
       source.muted = true;
       source.playsInline = true;
       source.preload = "auto";
+      source.crossOrigin = "anonymous";
+
       recorder.start(250);
       const end = timelineContentEnd(timelineClips);
-      for (let time = 0; time < end; time += 1 / 30) {
-        const clip = videoClips.find((candidate) => time >= candidate.timelineStart && time < candidate.timelineStart + candidate.duration);
-        context.fillStyle = "#000";
-        context.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (let time = 0; time <= end; time += 1 / 30) {
+        setExportProgress(Math.min(99, (time / end) * 100));
+
+        const clip = videoClips.find(
+          (candidate) =>
+            time >= candidate.timelineStart &&
+            time < candidate.timelineStart + candidate.duration,
+        );
+        ctx2d.fillStyle = "#000";
+        ctx2d.fillRect(0, 0, canvas.width, canvas.height);
         if (clip) {
           const asset = (assets ?? []).find((candidate) => candidate.id === clip.assetId);
           if (asset?.url) {
@@ -362,21 +439,50 @@ export default function Editor() {
             }
             source.currentTime = clip.sourceStart + (time - clip.timelineStart);
             await new Promise<void>((resolve) => {
-              const done = () => { source.removeEventListener("seeked", done); resolve(); };
+              const done = () => {
+                source.removeEventListener("seeked", done);
+                resolve();
+              };
               source.addEventListener("seeked", done, { once: true });
               setTimeout(done, 1000);
             });
-            context.drawImage(source, 0, 0, canvas.width, canvas.height);
+            ctx2d.drawImage(source, 0, 0, canvas.width, canvas.height);
           }
         }
+
+        // Sync audio elements to the current export position so audio data
+        // flows through the AudioContext → MediaStreamDestination → recorder.
+        for (const { el, clip: audioClip } of audioEntries) {
+          const srcTime = audioClip.sourceStart + (time - audioClip.timelineStart);
+          if (
+            time >= audioClip.timelineStart &&
+            time < audioClip.timelineStart + audioClip.duration
+          ) {
+            if (Math.abs(el.currentTime - srcTime) > 0.15) el.currentTime = srcTime;
+            void el.play().catch(() => undefined);
+          } else if (!el.paused) {
+            el.pause();
+          }
+        }
+
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
+
       recorder.stop();
       const blob = await stopped;
-      stream.getTracks().forEach((track) => track.stop());
+
+      // Cleanup
+      for (const { el } of audioEntries) {
+        el.pause();
+        el.src = "";
+      }
+      if (audioCtx) void audioCtx.close();
       source.pause();
       source.removeAttribute("src");
       source.load();
+      canvasStream.getTracks().forEach((track) => track.stop());
+      recordStream.getTracks().forEach((track) => track.stop());
+
       if (blob.size === 0) throw new Error("Export produced an empty file");
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -384,38 +490,112 @@ export default function Editor() {
       link.download = `${project?.name || "reelio-export"}.webm`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast.success(`Exported ${Math.round(blob.size / 1024)} KB WebM`);
+      const hasAudio = audioEntries.length > 0;
+      toast.success(
+        `Exported ${Math.round(blob.size / 1024)} KB WebM${hasAudio ? " with audio" : ""}`,
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Export failed");
     } finally {
       setExporting(false);
+      setExportProgress(0);
     }
   };
+
+  /* Mutation for AI edit — calls NVIDIA NIM on the server */
+  const aiEditMutation = trpc.ai.edit.useMutation();
 
   const handleAISendMessage = async (content: string) => {
     setAiMessages((messages) => [...messages, { role: "user", content }]);
     setAiLoading(true);
     try {
       const latestAssets = (await refetchAssets()).data ?? assets ?? [];
+
+      // Detect silence client-side when the instruction references pauses/silence.
+      // This is real Web Audio API analysis — not hallucinated.
       let silenceRanges: { start: number; end: number }[] = [];
-      if (/^remove silence\.?$/i.test(content.trim())) {
-        const audioAsset = latestAssets.find((asset) => asset.url && (asset.hasAudio || asset.mimeType.startsWith("audio/")));
-        if (audioAsset) silenceRanges = await detectSilenceRanges(audioAsset.url);
+      if (/silence|pause|dead.?air|quiet/i.test(content)) {
+        const audioAsset = latestAssets.find(
+          (asset) => asset.url && (asset.hasAudio || asset.mimeType.startsWith("audio/")),
+        );
+        if (audioAsset) {
+          silenceRanges = await detectSilenceRanges(audioAsset.url);
+        }
       }
-      const plan = planEditorRequest(content, timelineClips, silenceRanges);
+
+      // Caption generation is handled entirely client-side — no API key required.
+      if (/^(generate|add) captions?\.?$/i.test(content.trim())) {
+        const cues = generateDemoCaptions(timelineClips);
+        setCaptions(cues);
+        if (projId > 0) localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(cues));
+        setAiMessages((msgs) => [
+          ...msgs,
+          {
+            role: "assistant",
+            content:
+              cues.length > 0
+                ? `Generated ${cues.length} caption cue${cues.length === 1 ? "" : "s"} across the timeline. They are now visible in the preview.`
+                : "No clips on the timeline to generate captions for.",
+          },
+        ]);
+        return;
+      }
+
+      // Build the compact context the server needs — no binary data, no secrets
+      const clipsContext = timelineClips.map((c) => ({
+        id: c.id,
+        assetId: c.assetId,
+        assetName: c.assetName,
+        trackType: c.trackType,
+        trackId: c.trackId,
+        timelineStart: c.timelineStart,
+        duration: c.duration,
+        sourceStart: c.sourceStart,
+        sortIndex: c.sortIndex,
+      }));
+
+      const assetsContext = latestAssets.map((a) => ({
+        id: a.id,
+        name: a.name,
+        mimeType: a.mimeType,
+        duration: a.duration,
+        width: a.width,
+        height: a.height,
+        fps: a.fps ?? 30,
+        hasAudio: a.hasAudio ?? false,
+      }));
+
+      // Call NVIDIA NIM through the server — key never leaves the server
+      const { plan } = await aiEditMutation.mutateAsync({
+        instruction: content,
+        clips: clipsContext,
+        assets: assetsContext,
+        silenceRanges,
+        playhead: currentTime,
+      });
+
+      // Apply the validated plan through the existing edit-operation engine
       const assetMap = new Map(
-        latestAssets.map((asset) => [asset.id, {
-          id: asset.id,
-          duration: asset.duration,
-          hasAudio: asset.hasAudio,
-          width: asset.width,
-          height: asset.height,
-          fps: asset.fps,
-        }]),
+        latestAssets.map((asset) => [
+          asset.id,
+          {
+            id: asset.id,
+            duration: asset.duration,
+            hasAudio: asset.hasAudio ?? false,
+            width: asset.width,
+            height: asset.height,
+            fps: asset.fps ?? 30,
+          },
+        ]),
       );
+
       const result = applyEditOps(timelineClips, assetMap, plan.operations);
-      if (result.applied.some((operation) => operation.type === "removeRanges")) {
-        recordHistory("AI: Remove the first 5 seconds");
+
+      if (result.applied.some((op) => ["removeRanges", "removeClips", "trimClip", "moveClip", "setClipProps", "keepRanges", "splitClip"].includes(op.type))) {
+        // Snapshot history BEFORE persistence so undo restores correctly
+        recordHistory(`AI: ${content.slice(0, 60)}`);
+
+        // Persist the new timeline state through the existing mutation system
         const nextIds = new Set(result.clips.map((clip) => clip.id));
         for (const clip of timelineClips) {
           if (!nextIds.has(clip.id)) await deleteClipMutation.mutateAsync({ id: clip.id });
@@ -452,20 +632,45 @@ export default function Editor() {
         }
         await refetchClips();
       }
-      const detail = result.applied.length > 0 ? describePlan(plan) : plan.summary;
-      setAiMessages((messages) => [...messages, {
-        role: "assistant",
-        content: `${detail}${result.skipped.length ? `\n\nSkipped: ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`,
-      }]);
+
+      // Apply side-effect ops (captions, markers, audio filters).
+      for (const sideEffect of result.sideEffects) {
+        if (sideEffect.type === "addCaptions") {
+          const next = sideEffect.replaceExisting
+            ? sideEffect.cues
+            : [...captions, ...sideEffect.cues];
+          setCaptions(next);
+          if (projId > 0)
+            localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(next));
+        }
+      }
+
+      const detail =
+        result.applied.length > 0
+          ? describePlan(plan)
+          : plan.summary;
+
+      setAiMessages((messages) => [
+        ...messages,
+        {
+          role: "assistant",
+          content: `${detail}${result.skipped.length ? `\n\nSkipped: ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`,
+        },
+      ]);
     } catch (error) {
-      setAiMessages((messages) => [...messages, {
-        role: "assistant",
-        content: `I could not apply that edit: ${error instanceof Error ? error.message : "Unknown error"}`,
-      }]);
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      setAiMessages((messages) => [
+        ...messages,
+        {
+          role: "assistant",
+          content: `I could not apply that edit: ${msg}`,
+        },
+      ]);
     } finally {
       setAiLoading(false);
     }
   };
+
 
   /**
    * Split targets the selection, falling back to whatever sits under the
@@ -1096,8 +1301,13 @@ export default function Editor() {
             <option value={1.5}>1.5x</option>
             <option value={2}>2x</option>
           </select>
-            <Button size="sm" onClick={handleExport} disabled={exporting} className="bg-brand-500 hover:bg-brand-600 text-white h-8 text-xs">
-             {exporting ? "Exporting…" : "Export"}
+            <Button
+              size="sm"
+              onClick={handleExport}
+              disabled={exporting}
+              className="bg-brand-500 hover:bg-brand-600 text-white h-8 text-xs min-w-[88px]"
+            >
+              {exporting ? `Exporting ${Math.round(exportProgress)}%` : "Export"}
             </Button>
         </div>
       </header>
@@ -1263,9 +1473,21 @@ export default function Editor() {
                 height={"280px"}
                 placeholder="Ask AI to edit this timeline..."
                 emptyStateMessage="Describe an edit to apply"
-                suggestedPrompts={["Remove the first 5 seconds."]}
+                suggestedPrompts={["Remove the first 5 seconds.", "Generate captions."]}
               />
             </div>
+
+            {/* Caption overlay — shown whenever a cue covers the current time */}
+            {activeCue && (
+              <div className="absolute bottom-16 left-0 right-0 flex justify-center px-6 pointer-events-none z-20">
+                <div
+                  className="bg-black/85 backdrop-blur-sm text-white text-sm font-medium px-5 py-2.5 rounded-lg max-w-2xl text-center leading-relaxed shadow-lg"
+                  style={{ textShadow: "0 1px 3px rgba(0,0,0,0.9)" }}
+                >
+                  {activeCue.text}
+                </div>
+              </div>
+            )}
 
             {/* Playback Controls Overlay */}
             {activeClip && (

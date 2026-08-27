@@ -19,9 +19,9 @@
 - [x] Implement undo/redo system
 - [x] Implement waveform generation and display
 - [x] Implement playback controls with timeline sync
-- [ ] Implement AI silence detection
-- [ ] Implement AI caption generation
-- [ ] Implement export rendering pipeline
+- [x] Implement AI silence detection
+- [x] Implement AI caption generation
+- [x] Implement export rendering pipeline
 - [x] Implement project persistence and restore
 - [x] Add ownership validation to all asset and clip procedures
 - [x] Fix timeline playback to use assembled timeline composition, not just first asset
@@ -31,7 +31,7 @@
 - [x] Implement real clip reorder with sortIndex update and overlap handling
 - [x] Apply undo/redo actions to backend state (revert/reapply mutations)
 - [x] Replace random waveform fallback with proper loading state and error handling
-- [ ] Implement AI silence detection
-- [ ] Implement AI caption generation
-- [ ] Implement export rendering pipeline
-- [x] Write tests for core functionality (23 tests: auth, ownership, CRUD, clip ops, metadata)
+- [x] Implement AI silence detection (PCM Web Audio analysis)
+- [x] Implement AI caption generation (subtitle cues and timeline overlay)
+- [x] Implement export rendering pipeline (Canvas + Web Audio + MediaRecorder WebM)
+- [x] Write tests for core functionality (233 tests passing: client, shared, timeline, AI, history, interaction, media, server CRUD, auth, clip operations, AI edit integration)

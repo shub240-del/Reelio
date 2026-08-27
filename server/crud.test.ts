@@ -1,4 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+
+// Use the in-memory mock so tests run without a live MySQL database.
+vi.mock("./db");
+vi.mock("./storage", () => ({
+  storagePut: vi.fn(async (relKey: string) => ({
+    key: `mock_${relKey}`,
+    url: `/mock-storage/${relKey}`,
+  })),
+  storageGet: vi.fn(async (relKey: string) => ({
+    key: `mock_${relKey}`,
+    url: `/mock-storage/${relKey}`,
+  })),
+  storageGetSignedUrl: vi.fn(async () => "https://example.com/mock-signed-url"),
+}));
+import { resetStore } from "./__mocks__/db";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
@@ -27,6 +42,8 @@ function createAuthContext(userOverrides: Partial<NonNullable<TrpcContext["user"
     } as TrpcContext["res"],
   };
 }
+
+beforeAll(() => resetStore());
 
 describe("project CRUD - success paths", () => {
   const ctx = createAuthContext();

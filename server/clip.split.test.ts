@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Use the in-memory mock so tests run without a live MySQL database.
+vi.mock("./db");
+import { resetStore } from "./__mocks__/db";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
@@ -27,6 +31,8 @@ function createAuthContext(userOverrides: Partial<NonNullable<TrpcContext["user"
     } as TrpcContext["res"],
   };
 }
+
+beforeEach(() => resetStore());
 
 describe("clip.split - success path", () => {
   const ctx = createAuthContext();

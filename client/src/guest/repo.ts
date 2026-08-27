@@ -537,6 +537,10 @@ export const guestProcedures: Record<string, Handler> = {
   "marker.list": async () => [],
   "caption.list": async () => [],
   "export.list": async () => [],
+
+  // AI health — in guest mode the AI provider is always unavailable
+  // (NVIDIA_API_KEY lives on the server only)
+  "ai.health": async () => ({ available: false, provider: null }),
 };
 
 export function hasGuestProcedure(path: string): boolean {

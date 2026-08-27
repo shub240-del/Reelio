@@ -7,4 +7,7 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  // NVIDIA NIM — accessed only in server/_core/nvidia.ts via process.env directly
+  // Do NOT add this to VITE_* or expose it to the browser.
 };
+

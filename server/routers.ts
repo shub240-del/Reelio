@@ -32,6 +32,8 @@ import {
 } from "./db";
 import { storagePut } from "./storage";
 import { extractVideoMetadata, isVideoFile } from "./videoMetadata";
+import { aiEditRequestSchema, requestAIEdit } from "./aiEdit";
+import { getAIProvider } from "./_core/nvidia";
 
 export const appRouter = router({
   system: systemRouter,
@@ -352,6 +354,49 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         await updateExport(input.id, input);
         return { success: true };
+      }),
+  }),
+
+  /* ─── AI ─── */
+  ai: router({
+    /**
+     * Health check — reports whether the AI provider is configured.
+     * Never leaks the API key; only returns a boolean.
+     */
+    health: publicProcedure.query(() => {
+      const available = getAIProvider().isAvailable();
+      return { available, provider: available ? "nvidia-nim" : null };
+    }),
+
+    /**
+     * Core AI edit endpoint.
+     *
+     * Receives timeline context from the frontend, calls NVIDIA NIM,
+     * validates the structured EditPlan, and returns it.
+     *
+     * The server intentionally does NOT apply the plan — the frontend
+     * uses applyEditOps() through the same engine as manual edits, which
+     * guarantees undo/redo and persistence work identically.
+     *
+     * The endpoint is public so it works in guest mode too; callers
+     * still need the server to be running and NVIDIA_API_KEY to be set.
+     */
+    edit: publicProcedure
+      .input(aiEditRequestSchema)
+      .mutation(async ({ input }) => {
+        try {
+          const result = await requestAIEdit(input);
+          // Return plan + diagnostics; key is never included
+          return {
+            plan: result.plan,
+            model: result.model,
+            usage: result.usage,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "AI edit failed";
+          // Surface as a TRPC error so the frontend gets a typed, toast-able message
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
+        }
       }),
   }),
 });
