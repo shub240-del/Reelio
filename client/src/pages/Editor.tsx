@@ -227,8 +227,12 @@ export default function Editor() {
     audio0: { muted: false, locked: false, visible: true },
     audio1: { muted: false, locked: false, visible: true },
   });
+  const trackStatesRef = useRef(trackStates);
+  trackStatesRef.current = trackStates;
+  const recordTrackHistoryRef = useRef<((label: string) => void) | null>(null);
 
   const handleToggleTrackMute = (trackKey: string) => {
+    recordTrackHistoryRef.current?.(`Mute ${trackKey} track`);
     setTrackStates((prev) => ({
       ...prev,
       [trackKey]: { ...prev[trackKey], muted: !prev[trackKey]?.muted },
@@ -237,6 +241,7 @@ export default function Editor() {
   };
 
   const handleToggleTrackLock = (trackKey: string) => {
+    recordTrackHistoryRef.current?.(`Lock ${trackKey} track`);
     setTrackStates((prev) => ({
       ...prev,
       [trackKey]: { ...prev[trackKey], locked: !prev[trackKey]?.locked },
@@ -245,6 +250,7 @@ export default function Editor() {
   };
 
   const handleToggleTrackVisible = (trackKey: string) => {
+    recordTrackHistoryRef.current?.(`${trackStates[trackKey]?.visible === false ? "Show" : "Hide"} ${trackKey} track`);
     setTrackStates((prev) => ({
       ...prev,
       [trackKey]: { ...prev[trackKey], visible: !prev[trackKey]?.visible },
@@ -328,6 +334,8 @@ export default function Editor() {
     getClips: () => clipsRef.current,
     getSelection: () => selectionRef.current,
     setSelection: setSelectedClipIds,
+    getTrackStates: () => trackStatesRef.current,
+    setTrackStates,
     createClip: (clip) =>
       createClipMutation.mutateAsync({
         projectId: projId,
@@ -349,6 +357,7 @@ export default function Editor() {
     deleteClip: (id) => deleteClipMutation.mutateAsync({ id }),
     refetch: () => refetchClips(),
   });
+  recordTrackHistoryRef.current = recordHistory;
   const { generateWaveform, getWaveform, isGenerating } = useWaveform();
 
   /* Derived */
@@ -549,7 +558,18 @@ export default function Editor() {
       source.preload = "auto";
       source.crossOrigin = "anonymous";
 
+      // Decode the first source before recording. Starting MediaRecorder before
+      // this seek causes setup latency to be encoded as leading black/silence,
+      // making the downloaded duration longer than the timeline.
+      source.src = firstAsset.url;
+      await new Promise<void>((resolve, reject) => {
+        source.onloadedmetadata = () => resolve();
+        source.onerror = () => reject(new Error("The first timeline source could not be decoded"));
+      });
+      source.currentTime = firstAsset.duration > 0 ? 0 : 0;
+
       recorder.start(250);
+      const exportWallStart = performance.now();
       const end = timelineContentEnd(timelineClips);
 
       for (let time = 0; time <= end; time += 1 / 30) {
@@ -600,7 +620,14 @@ export default function Editor() {
           }
         }
 
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        // MediaRecorder timestamps real wall-clock time. Wait only until the
+        // synthetic timeline deadline; seek/decode latency is already part of
+        // the elapsed time and must not be added once per frame.
+        const deadline = exportWallStart + time * 1000;
+        const remaining = deadline - performance.now();
+        if (remaining > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+        }
       }
 
       recorder.stop();
@@ -1717,7 +1744,7 @@ export default function Editor() {
         <div className="flex-1 flex flex-col min-w-0 bg-black relative items-center justify-between p-4 overflow-hidden">
           {/* Video Preview Canvas Viewport */}
           <div className="w-full flex-1 flex items-center justify-center relative overflow-hidden rounded-lg bg-[#050508] border border-white/[0.05]">
-            {activeClip?.assetUrl ? (
+            {activeClip?.assetUrl && trackStates.video0?.visible !== false ? (
               <video
                 ref={previewVideoRef}
                 src={activeClip.assetUrl}

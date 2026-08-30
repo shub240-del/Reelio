@@ -62,7 +62,9 @@ export async function storagePut(
     return { key, url: `/manus-storage/${key}` };
   } else {
     // Local filesystem storage fallback
-    const uploadsDir = path.resolve(process.cwd(), "dist", "public", "uploads");
+    // Keep local uploads outside dist so a production build cannot delete media
+    // that an open guest/cloud session still references.
+    const uploadsDir = path.resolve(process.cwd(), ".reelio", "uploads");
     if (!fs.existsSync(uploadsDir)) {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }

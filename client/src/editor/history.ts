@@ -27,11 +27,21 @@ export interface ClipSnapshot {
   muted: boolean;
 }
 
+export interface TrackStateSnapshot {
+  muted: boolean;
+  locked: boolean;
+  visible: boolean;
+}
+
+export type TrackStatesSnapshot = Record<string, TrackStateSnapshot>;
+
 export interface TimelineSnapshot {
   label: string;
   clips: ClipSnapshot[];
   /** Clip ids selected when the snapshot was taken, so undo can restore focus. */
   selection: number[];
+  /** Persisted track controls captured with the timeline state. */
+  trackStates?: TrackStatesSnapshot;
 }
 
 /**

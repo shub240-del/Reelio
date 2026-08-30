@@ -37,7 +37,8 @@ async function startServer() {
   app.use(express.json({ limit: "500mb" }));
   app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
-  const uploadsDir = path.resolve(process.cwd(), "dist", "public", "uploads");
+  // Keep local uploads outside dist so builds do not invalidate persisted media.
+  const uploadsDir = path.resolve(process.cwd(), ".reelio", "uploads");
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
