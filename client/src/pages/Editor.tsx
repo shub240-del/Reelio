@@ -135,6 +135,19 @@ function probeImage(file: File): Promise<{ width: number; height: number }> {
   });
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const commaIdx = result.indexOf(",");
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
 /**
  * Find which clip is active at a given timeline time.
  * Returns the clip if currentTime falls within [timelineStart, timelineStart + duration].
@@ -301,6 +314,7 @@ export default function Editor() {
   const deleteClipMutation = trpc.clip.delete.useMutation();
   const trimClipMutation = trpc.clip.trim.useMutation();
   const splitClipMutation = trpc.clip.split.useMutation();
+  const batchCommitMutation = trpc.clip.batchCommit.useMutation();
 
   /**
    * Undo/Redo.
@@ -664,28 +678,33 @@ export default function Editor() {
           // Snapshot history BEFORE persistence so undo restores correctly
           recordHistory(`AI: ${reviewInstruction.slice(0, 60)}`);
 
-          // Persist the new timeline state through the existing mutation system
+          // Persist the new timeline state through a single atomic database transaction
+          const creates: any[] = [];
+          const updates: any[] = [];
+          const deletes: number[] = [];
           const nextIds = new Set(result.clips.map((clip) => clip.id));
+
           for (const clip of timelineClips) {
-            if (!nextIds.has(clip.id)) await deleteClipMutation.mutateAsync({ id: clip.id });
+            if (!nextIds.has(clip.id)) deletes.push(clip.id);
           }
           for (const clip of result.clips) {
             const previous = timelineClips.find((candidate) => candidate.id === clip.id);
             if (previous) {
-              await updateClipMutation.mutateAsync({
+              updates.push({
                 id: clip.id,
-                sourceStart: clip.sourceStart,
-                duration: clip.duration,
-                timelineStart: clip.timelineStart,
-                sortIndex: clip.sortIndex,
-                trackId: clip.trackId,
-                locked: clip.locked,
-                visible: clip.visible,
-                muted: clip.muted,
+                patch: {
+                  sourceStart: clip.sourceStart,
+                  duration: clip.duration,
+                  timelineStart: clip.timelineStart,
+                  sortIndex: clip.sortIndex,
+                  trackId: clip.trackId,
+                  locked: clip.locked,
+                  visible: clip.visible,
+                  muted: clip.muted,
+                },
               });
             } else {
-              await createClipMutation.mutateAsync({
-                projectId: projId,
+              creates.push({
                 assetId: clip.assetId,
                 trackId: clip.trackId,
                 trackType: clip.trackType,
@@ -696,9 +715,16 @@ export default function Editor() {
                 locked: clip.locked,
                 visible: clip.visible,
                 muted: clip.muted,
-              } as any);
+              });
             }
           }
+
+          await batchCommitMutation.mutateAsync({
+            projectId: projId,
+            creates,
+            updates,
+            deletes,
+          });
           await refetchClips();
         }
 
@@ -1029,9 +1055,7 @@ export default function Editor() {
         } else {
           metadata = { ...metadata, ...(await probeAudio(file)) };
         }
-        const arrayBuffer = await file.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-        const base64 = btoa(Array.from(bytes).map((b) => String.fromCharCode(b)).join(""));
+        const base64 = await fileToBase64(file);
         progressInterval = setInterval(() => setUploadProgress((p) => Math.min(p + Math.random() * 15, 90)), 200);
         await uploadMutation.mutateAsync({
           projectId: projId,

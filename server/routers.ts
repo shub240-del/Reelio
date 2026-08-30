@@ -5,6 +5,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import {
+  batchCommitTimeline,
   createAsset,
   createCaption,
   createClip,
@@ -273,6 +274,51 @@ export const appRouter = router({
         });
 
         return { success: true, newClipId: newClip?.id };
+      }),
+    batchCommit: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        creates: z.array(z.object({
+          assetId: z.number(),
+          trackId: z.number().default(0),
+          trackType: z.enum(["video", "audio"]).default("video"),
+          sourceStart: z.number(),
+          duration: z.number(),
+          timelineStart: z.number(),
+          sortIndex: z.number().default(0),
+          locked: z.boolean().optional(),
+          visible: z.boolean().optional(),
+          muted: z.boolean().optional(),
+          videoFx: z.string().optional().nullable(),
+          transition: z.string().optional().nullable(),
+        })).default([]),
+        updates: z.array(z.object({
+          id: z.number(),
+          patch: z.object({
+            sourceStart: z.number().optional(),
+            duration: z.number().optional(),
+            timelineStart: z.number().optional(),
+            sortIndex: z.number().optional(),
+            trackId: z.number().optional(),
+            trackType: z.enum(["video", "audio"]).optional(),
+            locked: z.boolean().optional(),
+            visible: z.boolean().optional(),
+            muted: z.boolean().optional(),
+            videoFx: z.string().optional().nullable(),
+            transition: z.string().optional().nullable(),
+          }),
+        })).default([]),
+        deletes: z.array(z.number()).default([]),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProject(input.projectId, ctx.user.id);
+        if (!project) throw new TRPCError({ code: "FORBIDDEN", message: "Unauthorized: project does not belong to this user" });
+        const clips = await batchCommitTimeline(input.projectId, ctx.user.id, {
+          creates: input.creates as any,
+          updates: input.updates as any,
+          deletes: input.deletes,
+        });
+        return { success: true, clips };
       }),
   }),
 

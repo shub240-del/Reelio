@@ -300,6 +300,56 @@ export async function deleteClip(id: number, userId: number) {
   await db.delete(clips).where(eq(clips.id, id));
 }
 
+export interface TimelineCommitOp {
+  creates: InsertClip[];
+  updates: Array<{ id: number; patch: Partial<InsertClip> }>;
+  deletes: number[];
+}
+
+export async function batchCommitTimeline(projectId: number, userId: number, ops: TimelineCommitOp) {
+  const db = await getDb();
+  if (!db) {
+    const proj = memProjects.find((p) => p.id === projectId);
+    if (!proj || proj.userId !== userId) throw new Error("Unauthorized: project does not belong to this user");
+
+    for (const delId of ops.deletes) {
+      const idx = memClips.findIndex((c) => c.id === delId && c.projectId === projectId);
+      if (idx !== -1) memClips.splice(idx, 1);
+    }
+    for (const up of ops.updates) {
+      const clip = memClips.find((c) => c.id === up.id && c.projectId === projectId);
+      if (clip) Object.assign(clip, up.patch);
+    }
+    for (const cr of ops.creates) {
+      memClips.push({ id: nextClipId++, ...cr, projectId, createdAt: new Date() });
+    }
+    return getProjectClips(projectId);
+  }
+
+  const project = await db.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId))).limit(1);
+  if (!project[0]) throw new Error("Unauthorized: project does not belong to this user");
+
+  await db.transaction(async (tx) => {
+    for (const delId of ops.deletes) {
+      await tx.delete(clips).where(and(eq(clips.id, delId), eq(clips.projectId, projectId)));
+    }
+    for (const up of ops.updates) {
+      const updateSet: Record<string, unknown> = {};
+      for (const key of ["sourceStart", "duration", "timelineStart", "sortIndex", "trackId", "trackType", "locked", "visible", "muted", "videoFx", "transition"] as const) {
+        if ((up.patch as any)[key] !== undefined) updateSet[key] = (up.patch as any)[key];
+      }
+      if (Object.keys(updateSet).length > 0) {
+        await tx.update(clips).set(updateSet).where(and(eq(clips.id, up.id), eq(clips.projectId, projectId)));
+      }
+    }
+    for (const cr of ops.creates) {
+      await tx.insert(clips).values({ ...cr, projectId });
+    }
+  });
+
+  return getProjectClips(projectId);
+}
+
 /* ─── Marker helpers ─── */
 export async function createMarker(data: InsertMarker) {
   const db = await getDb();

@@ -51,26 +51,27 @@ export const LeftCategoryNav: React.FC<LeftCategoryNavProps> = ({
   ];
 
   return (
-    <div className="flex flex-col h-full bg-[#111116] border-r border-white/[0.07]">
+    <div className="flex flex-col w-full flex-shrink-0 bg-[#0e0e13] border-b border-white/[0.08] select-none">
       {/* Top Main Category Tabs */}
-      <div className="flex items-center border-b border-white/[0.07] px-2 bg-[#0e0e13] overflow-x-auto no-scrollbar">
+      <div className="flex items-center px-1.5 bg-[#0e0e13] overflow-x-auto no-scrollbar scroll-smooth">
         {categories.map((cat) => {
           const Icon = cat.icon;
           const isActive = activeCategory === cat.id;
           return (
             <button
               key={cat.id}
+              type="button"
               onClick={() => onSelectCategory(cat.id)}
-              className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-all relative whitespace-nowrap ${
+              className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors relative whitespace-nowrap flex-shrink-0 cursor-pointer ${
                 isActive
                   ? "text-sky-400 font-semibold"
-                  : "text-gray-400 hover:text-gray-200"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]"
               }`}
             >
-              <Icon className={`w-3.5 h-3.5 ${isActive ? "text-sky-400" : "text-gray-400"}`} />
-              <span>{cat.label}</span>
+              <Icon className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "text-sky-400" : "text-zinc-400"}`} />
+              <span className="whitespace-nowrap">{cat.label}</span>
               {isActive && (
-                <div className="absolute bottom-0 left-2 right-2 h-0.5 bg-sky-400 rounded-full shadow-[0_0_8px_rgba(56,189,248,0.8)]" />
+                <div className="absolute bottom-0 left-1.5 right-1.5 h-[2px] bg-sky-400 rounded-full shadow-[0_0_8px_rgba(56,189,248,0.7)]" />
               )}
             </button>
           );
@@ -79,17 +80,18 @@ export const LeftCategoryNav: React.FC<LeftCategoryNavProps> = ({
 
       {/* Sub Tab Navigation Pills (For Media tab) */}
       {activeCategory === "media" && (
-        <div className="flex items-center gap-1.5 p-2 bg-[#14141a] border-b border-white/[0.05] overflow-x-auto no-scrollbar">
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#131319] border-t border-white/[0.05] overflow-x-auto no-scrollbar scroll-smooth">
           {subTabs.map((sub) => {
             const isActive = activeSubTab === sub.id;
             return (
               <button
                 key={sub.id}
+                type="button"
                 onClick={() => onSelectSubTab(sub.id)}
-                className={`px-3 py-1 rounded-md text-[11px] font-medium transition-all whitespace-nowrap ${
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all whitespace-nowrap flex-shrink-0 cursor-pointer ${
                   isActive
-                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/40 shadow-sm"
-                    : "text-gray-400 hover:text-gray-200 hover:bg-white/[0.04]"
+                    ? "bg-sky-500/15 text-sky-300 border border-sky-500/35 shadow-xs font-medium"
+                    : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04] border border-transparent"
                 }`}
               >
                 {sub.label}

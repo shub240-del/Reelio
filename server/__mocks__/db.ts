@@ -252,6 +252,47 @@ export async function deleteClip(id: number, userId: number): Promise<void> {
   store.clips.delete(id);
 }
 
+export async function batchCommitTimeline(
+  projectId: number,
+  userId: number,
+  ops: {
+    creates: InsertClip[];
+    updates: Array<{ id: number; patch: Partial<InsertClip> }>;
+    deletes: number[];
+  }
+): Promise<Clip[]> {
+  const project = store.projects.get(projectId);
+  if (!project || project.userId !== userId)
+    throw new Error("Unauthorized: project does not belong to this user");
+
+  for (const delId of ops.deletes) {
+    store.clips.delete(delId);
+  }
+  for (const up of ops.updates) {
+    const clip = store.clips.get(up.id);
+    if (clip) Object.assign(clip, up.patch);
+  }
+  for (const cr of ops.creates) {
+    const id = autoId();
+    store.clips.set(id, {
+      id,
+      projectId,
+      assetId: cr.assetId,
+      trackId: cr.trackId ?? 0,
+      trackType: (cr.trackType ?? "video") as "video" | "audio",
+      sourceStart: cr.sourceStart,
+      duration: cr.duration,
+      timelineStart: cr.timelineStart,
+      sortIndex: cr.sortIndex ?? 0,
+      locked: cr.locked ?? false,
+      visible: cr.visible ?? true,
+      muted: cr.muted ?? false,
+      createdAt: new Date(),
+    });
+  }
+  return getProjectClips(projectId);
+}
+
 export async function trimClip(id: number, sourceStart: number, duration: number): Promise<void> {
   const row = store.clips.get(id);
   if (!row) throw new Error("Clip not found");

@@ -55,6 +55,52 @@ describe("clip operations", () => {
       caller.clip.list({ projectId: 99999 })
     ).rejects.toThrow();
   });
+
+  it("clip.batchCommit atomically creates, updates, and deletes clips", async () => {
+    const proj = await caller.project.create({ name: "Batch Project" });
+    const result = await caller.clip.batchCommit({
+      projectId: proj.id,
+      creates: [
+        {
+          assetId: 1,
+          trackId: 0,
+          trackType: "video",
+          sourceStart: 0,
+          duration: 10,
+          timelineStart: 0,
+          sortIndex: 0,
+        },
+        {
+          assetId: 1,
+          trackId: 0,
+          trackType: "video",
+          sourceStart: 10,
+          duration: 5,
+          timelineStart: 10,
+          sortIndex: 1,
+        },
+      ],
+      updates: [],
+      deletes: [],
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.clips.length).toBe(2);
+
+    const firstClip = result.clips[0];
+    const secondClip = result.clips[1];
+
+    const syncResult = await caller.clip.batchCommit({
+      projectId: proj.id,
+      creates: [],
+      updates: [{ id: firstClip.id, patch: { duration: 8 } }],
+      deletes: [secondClip.id],
+    });
+
+    expect(syncResult.success).toBe(true);
+    expect(syncResult.clips.length).toBe(1);
+    expect(syncResult.clips[0].duration).toBe(8);
+  });
 });
 
 describe("project operations", () => {
