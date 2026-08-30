@@ -393,6 +393,25 @@ export default function Editor() {
     }
   }, [assets]);
 
+  /* Restore track controls from localStorage on mount */
+  useEffect(() => {
+    if (projId > 0) {
+      try {
+        const stored = localStorage.getItem(`reelio-track-states-${projId}`);
+        if (stored) setTrackStates(JSON.parse(stored) as typeof trackStates);
+      } catch {
+        /* corrupt storage — keep defaults */
+      }
+    }
+  }, [projId]);
+
+  /* Persist track controls for guest projects. */
+  useEffect(() => {
+    if (projId > 0) {
+      localStorage.setItem(`reelio-track-states-${projId}`, JSON.stringify(trackStates));
+    }
+  }, [projId, trackStates]);
+
   /* Restore captions from localStorage on mount */
   useEffect(() => {
     if (projId > 0) {
@@ -410,6 +429,8 @@ export default function Editor() {
     (clip) =>
       clip.trackType === "audio" &&
       clip.visible !== false &&
+      trackStates[clip.trackId === 0 ? "audio0" : "audio1"]?.visible !== false &&
+      !trackStates[clip.trackId === 0 ? "audio0" : "audio1"]?.muted &&
       clip.assetUrl &&
       currentTime >= clip.timelineStart &&
       currentTime < clip.timelineStart + clip.duration,
@@ -426,20 +447,25 @@ export default function Editor() {
       if (!audio) continue;
       const sourceTime = clip.sourceStart + currentTime - clip.timelineStart;
       if (Math.abs(audio.currentTime - sourceTime) > 0.08) audio.currentTime = sourceTime;
-      audio.muted = clip.muted;
-      audio.volume = clip.muted ? 0 : 1;
+      const trackState = trackStates[clip.trackId === 0 ? "audio0" : "audio1"];
+      audio.muted = clip.muted || trackState?.muted === true;
+      audio.volume = audio.muted ? 0 : 1;
       if (isPlaying) {
         void audio.play().catch(() => undefined);
       } else {
         audio.pause();
       }
     }
-  }, [activeAudioClips, currentTime, isPlaying]);
+  }, [activeAudioClips, currentTime, isPlaying, trackStates]);
 
   const handleExport = async () => {
     if (exporting || timelineClips.length === 0) return;
     const videoClips = timelineClips.filter(
-      (clip) => clip.trackType === "video" && clip.visible !== false && clip.duration > 0,
+      (clip) =>
+        clip.trackType === "video" &&
+        clip.visible !== false &&
+        trackStates.video0?.visible !== false &&
+        clip.duration > 0,
     );
     if (videoClips.length === 0) {
       toast.error("Add a visible video clip before exporting");
@@ -474,6 +500,8 @@ export default function Editor() {
       if (audioCtx && audioDest) {
         const audibleClips = timelineClips.filter((c) => {
           if (c.muted || c.visible === false || !c.assetUrl) return false;
+          const trackKey = c.trackType === "video" ? "video0" : c.trackId === 0 ? "audio0" : "audio1";
+          if (trackStates[trackKey]?.muted || trackStates[trackKey]?.visible === false) return false;
           const asset = (assets ?? []).find((a) => a.id === c.assetId);
           return c.trackType === "audio" || asset?.hasAudio;
         });
@@ -1693,7 +1721,7 @@ export default function Editor() {
               <video
                 ref={previewVideoRef}
                 src={activeClip.assetUrl}
-                muted={activeClip.muted || isMuted || !((assets ?? []).find((asset) => asset.id === activeClip.assetId)?.hasAudio)}
+                  muted={activeClip.muted || isMuted || trackStates.video0?.muted === true || !((assets ?? []).find((asset) => asset.id === activeClip.assetId)?.hasAudio)}
                 playsInline
                 style={{
                   filter:
