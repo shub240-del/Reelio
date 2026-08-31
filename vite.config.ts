@@ -23,6 +23,17 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       maxParallelFileOps: 4,
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("lucide-react")) return "icons-vendor";
+          if (id.includes("@radix-ui")) return "radix-vendor";
+          if (id.includes("@trpc") || id.includes("@tanstack") || id.includes("superjson")) return "data-vendor";
+          if (id.includes("react-dom") || /[\\/]react@[0-9]/.test(id) || id.includes("scheduler")) return "react-vendor";
+          if (id.includes("zod")) return "validation-vendor";
+          return undefined;
+        },
+      },
     },
   },
   server: {

@@ -83,7 +83,7 @@ export async function getUserByOpenId(openId: string): Promise<User | undefined>
 export async function createProject(
   userId: number,
   name: string,
-  description?: string,
+  description?: string | null,
 ): Promise<Project> {
   const id = autoId();
   const row: Project = {
@@ -132,12 +132,32 @@ export async function duplicateProject(
 ): Promise<Project | undefined> {
   const source = await getProject(id, userId);
   if (!source) return undefined;
-  return createProject(userId, name ?? `${source.name} Copy`, source.description ?? undefined);
+  const copy = await createProject(userId, name ?? `${source.name} Copy`, source.description ?? undefined);
+  const assetIds = new Map<number, number>();
+  for (const asset of await getProjectAssets(id)) {
+    const cloned = await createAsset({ ...asset, id: undefined, projectId: copy.id } as unknown as InsertAsset);
+    assetIds.set(asset.id, cloned.id);
+  }
+  for (const clip of await getProjectClips(id)) {
+    await createClip({ ...clip, id: undefined, projectId: copy.id, assetId: assetIds.get(clip.assetId) ?? clip.assetId } as unknown as InsertClip);
+  }
+  for (const marker of await getProjectMarkers(id)) {
+    await createMarker({ ...marker, id: undefined, projectId: copy.id } as unknown as InsertMarker);
+  }
+  for (const caption of await getProjectCaptions(id)) {
+    await createCaption({ ...caption, id: undefined, projectId: copy.id, assetId: assetIds.get(caption.assetId) ?? caption.assetId } as unknown as InsertCaption);
+  }
+  return copy;
 }
 
 export async function deleteProject(id: number, userId: number): Promise<void> {
   const row = store.projects.get(id);
   if (!row || row.userId !== userId) throw new Error("Project not found or unauthorized");
+  for (const table of [store.assets, store.clips, store.markers, store.captions, store.exports]) {
+    for (const [rowId, value] of table as Map<number, { projectId: number }>) {
+      if (value.projectId === id) table.delete(rowId);
+    }
+  }
   store.projects.delete(id);
 }
 
@@ -177,6 +197,10 @@ export async function getAsset(id: number): Promise<Asset | undefined> {
   return store.assets.get(id);
 }
 
+export async function isStorageKeyReferenced(storageKey: string): Promise<boolean> {
+  return [...store.assets.values()].some((asset) => asset.storageKey === storageKey);
+}
+
 export async function deleteAsset(id: number, userId: number): Promise<void> {
   const asset = store.assets.get(id);
   if (!asset) throw new Error("Asset not found");
@@ -186,6 +210,9 @@ export async function deleteAsset(id: number, userId: number): Promise<void> {
   // Cascade clips
   for (const [cid, clip] of store.clips) {
     if (clip.assetId === id) store.clips.delete(cid);
+  }
+  for (const [captionId, caption] of store.captions) {
+    if (caption.assetId === id) store.captions.delete(captionId);
   }
   store.assets.delete(id);
 }
@@ -207,6 +234,8 @@ export async function createClip(data: InsertClip): Promise<Clip> {
     locked: data.locked ?? false,
     visible: data.visible ?? true,
     muted: data.muted ?? false,
+    videoFx: data.videoFx ?? null,
+    transition: data.transition ?? null,
     createdAt: new Date(),
   };
   store.clips.set(id, row);
@@ -287,6 +316,8 @@ export async function batchCommitTimeline(
       locked: cr.locked ?? false,
       visible: cr.visible ?? true,
       muted: cr.muted ?? false,
+      videoFx: cr.videoFx ?? null,
+      transition: cr.transition ?? null,
       createdAt: new Date(),
     });
   }
@@ -348,6 +379,10 @@ export async function getProjectMarkers(projectId: number): Promise<Marker[]> {
     .sort((a, b) => a.time - b.time);
 }
 
+export async function getMarker(id: number): Promise<Marker | undefined> {
+  return store.markers.get(id);
+}
+
 export async function deleteMarker(id: number): Promise<void> {
   store.markers.delete(id);
 }
@@ -381,6 +416,10 @@ export async function getAssetCaptions(assetId: number): Promise<Caption[]> {
     .sort((a, b) => a.startTime - b.startTime);
 }
 
+export async function getCaption(id: number): Promise<Caption | undefined> {
+  return store.captions.get(id);
+}
+
 /* ─── Export helpers ─── */
 
 export async function createExport(data: InsertExport): Promise<ExportRow> {
@@ -406,6 +445,10 @@ export async function getProjectExports(projectId: number): Promise<ExportRow[]>
   return [...store.exports.values()]
     .filter((e) => e.projectId === projectId)
     .sort((a, b) => +b.createdAt - +a.createdAt);
+}
+
+export async function getExport(id: number): Promise<ExportRow | undefined> {
+  return store.exports.get(id);
 }
 
 export async function updateExport(

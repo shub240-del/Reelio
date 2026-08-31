@@ -21,6 +21,9 @@ import { ENV } from "./_core/env";
 let _db: ReturnType<typeof drizzle> | null = null;
 
 export async function getDb() {
+  if (!process.env.DATABASE_URL && ENV.isProduction) {
+    throw new Error("DATABASE_URL is required in production");
+  }
   if (!_db && process.env.DATABASE_URL) {
     try {
       _db = drizzle(process.env.DATABASE_URL);
@@ -32,60 +35,22 @@ export async function getDb() {
   return _db;
 }
 
-// In-memory store fallback when MySQL database is not connected
+// Empty in-memory development store. Production is required to use MySQL.
 const memUsers: any[] = [
-  { id: 1, openId: "local-dev-user", name: "Reelio Creator", email: "creator@reelio.ai", role: "admin", loginMethod: "local", createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date() },
+  { id: 1, openId: "local-dev-user", name: "Local Creator", email: null, role: "admin", loginMethod: "local", createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date() },
 ];
 
-const memProjects: any[] = [
-  { id: 1, userId: 1, name: "YouTube Tech Review", status: "draft", description: "AI Video Editing Demo", createdAt: new Date(), updatedAt: new Date() },
-  { id: 2, userId: 1, name: "Video Project 10", status: "draft", description: "Complete browser AI video editing test", createdAt: new Date(), updatedAt: new Date() },
-];
-
-const memAssets: any[] = [
-  {
-    id: 1,
-    projectId: 2,
-    userId: 1,
-    name: "Video Project 10.mp4",
-    storageKey: "1/projects/2/assets/Video_Project_10.mp4",
-    url: "/uploads/Video_Project_10.mp4",
-    mimeType: "video/mp4",
-    sizeBytes: 91925378,
-    duration: 25.0,
-    width: 1920,
-    height: 1080,
-    fps: 30,
-    hasAudio: true,
-    createdAt: new Date(),
-  },
-];
-
-const memClips: any[] = [
-  {
-    id: 1,
-    projectId: 2,
-    assetId: 1,
-    trackId: 0,
-    trackType: "video",
-    sourceStart: 0,
-    duration: 25.0,
-    timelineStart: 0,
-    sortIndex: 0,
-    locked: false,
-    visible: true,
-    muted: false,
-    createdAt: new Date(),
-  },
-];
+const memProjects: any[] = [];
+const memAssets: any[] = [];
+const memClips: any[] = [];
 
 const memMarkers: any[] = [];
 const memCaptions: any[] = [];
 const memExports: any[] = [];
 
-let nextProjectId = 3;
-let nextAssetId = 2;
-let nextClipId = 2;
+let nextProjectId = 1;
+let nextAssetId = 1;
+let nextClipId = 1;
 let nextMarkerId = 1;
 let nextCaptionId = 1;
 let nextExportId = 1;
@@ -160,7 +125,7 @@ export async function getProject(id: number, userId: number) {
   return result[0];
 }
 
-export async function updateProject(id: number, userId: number, name?: string, status?: string, description?: string) {
+export async function updateProject(id: number, userId: number, name?: string, status?: string, description?: string | null) {
   const db = await getDb();
   if (!db) {
     const proj = memProjects.find((p) => p.id === id && p.userId === userId);
@@ -182,16 +147,61 @@ export async function updateProject(id: number, userId: number, name?: string, s
 export async function duplicateProject(id: number, userId: number, name?: string) {
   const source = await getProject(id, userId);
   if (!source) return undefined;
-  return createProject(userId, name ?? `${source.name} Copy`, source.description ?? undefined);
+  const copy = await createProject(userId, name ?? `${source.name} Copy`, source.description ?? undefined);
+  const assetIdMap = new Map<number, number>();
+
+  for (const asset of await getProjectAssets(id)) {
+    const { id: _id, createdAt: _createdAt, ...values } = asset;
+    const cloned = await createAsset({ ...values, projectId: copy.id, userId } as InsertAsset);
+    if (cloned) assetIdMap.set(asset.id, cloned.id);
+  }
+  for (const clip of await getProjectClips(id)) {
+    const { id: _id, createdAt: _createdAt, ...values } = clip;
+    await createClip({
+      ...values,
+      projectId: copy.id,
+      assetId: assetIdMap.get(clip.assetId) ?? clip.assetId,
+    } as InsertClip);
+  }
+  for (const marker of await getProjectMarkers(id)) {
+    const { id: _id, createdAt: _createdAt, ...values } = marker;
+    await createMarker({ ...values, projectId: copy.id } as InsertMarker);
+  }
+  for (const caption of await getProjectCaptions(id)) {
+    const { id: _id, createdAt: _createdAt, ...values } = caption;
+    await createCaption({
+      ...values,
+      projectId: copy.id,
+      assetId: assetIdMap.get(caption.assetId) ?? caption.assetId,
+    } as InsertCaption);
+  }
+  return copy;
 }
 
 export async function deleteProject(id: number, userId: number) {
   const db = await getDb();
   if (!db) {
     const idx = memProjects.findIndex((p) => p.id === id && p.userId === userId);
-    if (idx !== -1) memProjects.splice(idx, 1);
+    if (idx === -1) return;
+    for (const rows of [memClips, memMarkers, memCaptions, memExports, memAssets]) {
+      for (let rowIndex = rows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+        if (rows[rowIndex].projectId === id) rows.splice(rowIndex, 1);
+      }
+    }
+    memProjects.splice(idx, 1);
     return;
   }
+  const owned = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.id, id), eq(projects.userId, userId)))
+    .limit(1);
+  if (!owned[0]) return;
+  await db.delete(clips).where(eq(clips.projectId, id));
+  await db.delete(markers).where(eq(markers.projectId, id));
+  await db.delete(captions).where(eq(captions.projectId, id));
+  await db.delete(exportsTable).where(eq(exportsTable.projectId, id));
+  await db.delete(assets).where(eq(assets.projectId, id));
   await db.delete(projects).where(and(eq(projects.id, id), eq(projects.userId, userId)));
 }
 
@@ -222,6 +232,13 @@ export async function getAsset(id: number) {
   return result[0];
 }
 
+export async function isStorageKeyReferenced(storageKey: string): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return memAssets.some((asset) => asset.storageKey === storageKey);
+  const rows = await db.select({ id: assets.id }).from(assets).where(eq(assets.storageKey, storageKey)).limit(1);
+  return rows.length > 0;
+}
+
 export async function deleteAsset(id: number, userId: number) {
   const db = await getDb();
   if (!db) {
@@ -231,6 +248,12 @@ export async function deleteAsset(id: number, userId: number) {
     if (!proj || proj.userId !== userId) throw new Error("Unauthorized: asset does not belong to this user");
     const idx = memAssets.findIndex((a) => a.id === id);
     if (idx !== -1) memAssets.splice(idx, 1);
+    for (let clipIndex = memClips.length - 1; clipIndex >= 0; clipIndex -= 1) {
+      if (memClips[clipIndex].assetId === id) memClips.splice(clipIndex, 1);
+    }
+    for (let captionIndex = memCaptions.length - 1; captionIndex >= 0; captionIndex -= 1) {
+      if (memCaptions[captionIndex].assetId === id) memCaptions.splice(captionIndex, 1);
+    }
     return;
   }
   const asset = await getAsset(id);
@@ -238,6 +261,7 @@ export async function deleteAsset(id: number, userId: number) {
   const project = await db.select().from(projects).where(eq(projects.id, asset.projectId)).limit(1);
   if (!project[0] || project[0].userId !== userId) throw new Error("Unauthorized: asset does not belong to this user");
   await db.delete(clips).where(eq(clips.assetId, id));
+  await db.delete(captions).where(eq(captions.assetId, id));
   await db.delete(assets).where(eq(assets.id, id));
 }
 
@@ -269,7 +293,7 @@ export async function updateClip(id: number, updates: Partial<InsertClip>) {
     return;
   }
   const updateSet: Record<string, unknown> = {};
-  for (const key of ["sourceStart", "duration", "timelineStart", "sortIndex", "trackId", "trackType", "locked", "visible", "muted"] as const) {
+  for (const key of ["sourceStart", "duration", "timelineStart", "sortIndex", "trackId", "trackType", "locked", "visible", "muted", "videoFx", "transition"] as const) {
     if (updates[key] !== undefined) updateSet[key] = updates[key];
   }
   await db.update(clips).set(updateSet).where(eq(clips.id, id));
@@ -370,6 +394,13 @@ export async function getProjectMarkers(projectId: number) {
   return db.select().from(markers).where(eq(markers.projectId, projectId)).orderBy(markers.time);
 }
 
+export async function getMarker(id: number) {
+  const db = await getDb();
+  if (!db) return memMarkers.find((marker) => marker.id === id);
+  const rows = await db.select().from(markers).where(eq(markers.id, id)).limit(1);
+  return rows[0];
+}
+
 export async function deleteMarker(id: number) {
   const db = await getDb();
   if (!db) {
@@ -406,6 +437,13 @@ export async function getAssetCaptions(assetId: number) {
   return db.select().from(captions).where(eq(captions.assetId, assetId)).orderBy(captions.startTime);
 }
 
+export async function getCaption(id: number) {
+  const db = await getDb();
+  if (!db) return memCaptions.find((caption) => caption.id === id);
+  const rows = await db.select().from(captions).where(eq(captions.id, id)).limit(1);
+  return rows[0];
+}
+
 /* ─── Export helpers ─── */
 export async function createExport(data: InsertExport) {
   const db = await getDb();
@@ -424,6 +462,13 @@ export async function getProjectExports(projectId: number) {
   const db = await getDb();
   if (!db) return memExports.filter((e) => e.projectId === projectId);
   return db.select().from(exportsTable).where(eq(exportsTable.projectId, projectId)).orderBy(desc(exportsTable.createdAt));
+}
+
+export async function getExport(id: number) {
+  const db = await getDb();
+  if (!db) return memExports.find((exportRow) => exportRow.id === id);
+  const rows = await db.select().from(exportsTable).where(eq(exportsTable.id, id)).limit(1);
+  return rows[0];
 }
 
 export async function updateExport(id: number, updates: { status?: string; errorMessage?: string }) {

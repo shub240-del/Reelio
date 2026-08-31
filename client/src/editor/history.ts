@@ -25,6 +25,8 @@ export interface ClipSnapshot {
   locked: boolean;
   visible: boolean;
   muted: boolean;
+  videoFx?: string | null;
+  transition?: string | null;
 }
 
 export interface TrackStateSnapshot {
@@ -61,6 +63,8 @@ const COMPARED_FIELDS: (keyof ClipSnapshot)[] = [
   "locked",
   "visible",
   "muted",
+  "videoFx",
+  "transition",
 ];
 
 /** Copies only the persistent fields, dropping volatile ones like assetUrl. */
@@ -77,6 +81,8 @@ export function snapshotClip(clip: ClipSnapshot): ClipSnapshot {
     locked: clip.locked,
     visible: clip.visible,
     muted: clip.muted,
+    videoFx: clip.videoFx ?? null,
+    transition: clip.transition ?? null,
   };
 }
 

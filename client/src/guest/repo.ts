@@ -12,7 +12,7 @@
  */
 import { clampClipToAsset, type TimelineClip } from "@shared/timeline";
 import { probeMedia } from "@/editor/media";
-import { blobUrl, del, delAllBy, get, getAllBy, getAll, getBlob, put, putBlob, revokeBlobUrl } from "./db";
+import { blobUrl, commitGuestClipBatch, del, delAllBy, get, getAllBy, getAll, getBlob, put, putBlob, revokeBlobUrl } from "./db";
 
 export interface GuestUser {
   id: number;
@@ -69,6 +69,8 @@ export interface GuestClip {
   locked: boolean;
   visible: boolean;
   muted: boolean;
+  videoFx?: string | null;
+  transition?: string | null;
   createdAt: Date;
 }
 
@@ -118,11 +120,11 @@ async function projectGet(input: { id: number }): Promise<GuestProject> {
   return (await get<GuestProject>("projects", input.id)) ?? notFound("Project");
 }
 
-async function projectUpdate(input: { id: number; name?: string; status?: string; description?: string }): Promise<GuestProject> {
+async function projectUpdate(input: { id: number; name?: string; status?: string; description?: string | null }): Promise<GuestProject> {
   const row = (await get<GuestProject>("projects", input.id)) ?? notFound("Project");
   if (input.name !== undefined) row.name = input.name;
   if (input.status !== undefined) row.status = input.status as GuestProject["status"];
-  if (input.description !== undefined) row.description = input.description || null;
+  if (input.description !== undefined) row.description = input.description;
   row.updatedAt = now();
   await put("projects", row);
   return row;
@@ -341,6 +343,8 @@ async function clipCreate(input: {
   locked?: boolean;
   visible?: boolean;
   muted?: boolean;
+  videoFx?: string | null;
+  transition?: string | null;
 }): Promise<GuestClip> {
   const existing = await clipList({ projectId: input.projectId });
   const row: Omit<GuestClip, "id"> & { id?: number } = {
@@ -355,6 +359,8 @@ async function clipCreate(input: {
     locked: input.locked ?? false,
     visible: input.visible ?? true,
     muted: input.muted ?? false,
+    videoFx: input.videoFx ?? null,
+    transition: input.transition ?? null,
     createdAt: now(),
   };
   if (input.id !== undefined) row.id = input.id;
@@ -372,6 +378,8 @@ async function clipUpdate(input: {
   visible?: boolean;
   muted?: boolean;
   trackId?: number;
+  videoFx?: string | null;
+  transition?: string | null;
 }): Promise<GuestClip> {
   const row = (await get<GuestClip>("clips", input.id)) ?? notFound("Clip");
   const fields = [
@@ -383,6 +391,8 @@ async function clipUpdate(input: {
     "visible",
     "muted",
     "trackId",
+    "videoFx",
+    "transition",
   ] as const;
   for (const field of fields) {
     const value = input[field];
@@ -499,6 +509,23 @@ async function clipSplit(input: {
   return { success: true, newClipId: (rightRow as GuestClip).id };
 }
 
+async function clipBatchCommit(input: {
+  projectId: number;
+  creates?: Array<Omit<GuestClip, "id" | "projectId" | "createdAt">>;
+  updates?: Array<{ id: number; patch: Partial<GuestClip> }>;
+  deletes?: number[];
+}): Promise<{ success: true; clips: GuestClip[] }> {
+  const clips = await commitGuestClipBatch<GuestClip>(input.projectId, {
+    creates: (input.creates ?? []).map((clip) => ({ ...clip, createdAt: now() })),
+    updates: input.updates ?? [],
+    deletes: input.deletes ?? [],
+  });
+  return {
+    success: true,
+    clips: clips.sort((a, b) => a.sortIndex - b.sortIndex || a.timelineStart - b.timelineStart),
+  };
+}
+
 /* ────────────────────────── dispatch ────────────────────────── */
 
 type Handler = (input: any) => Promise<unknown>;
@@ -531,6 +558,7 @@ export const guestProcedures: Record<string, Handler> = {
   "clip.delete": clipDelete,
   "clip.trim": clipTrim,
   "clip.split": clipSplit,
+  "clip.batchCommit": clipBatchCommit,
 
   // Features with no local implementation yet still need to resolve, or the
   // editor would surface an error banner for data it merely has none of.

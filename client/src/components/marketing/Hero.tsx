@@ -11,7 +11,7 @@ import { useExistingAnchors, Container, GlassCard, GradientText, Glow } from "./
 import { HeroDemo } from "./HeroDemo";
 
 /** Honest capability line — every claim maps to shipped import support. */
-const FACTS = ["MP4, MOV & WebM", "Runs in your browser", "Nothing to install"];
+const FACTS = ["MP4, MOV & WebM", "Browser-first workflow", "Nothing to install"];
 
 export function Hero() {
   // The demo section arrives in a later milestone; never offer a dead scroll.
@@ -35,18 +35,18 @@ export function Hero() {
           <div className="max-w-xl">
             <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.09] bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-zinc-300">
               <span className="h-1.5 w-1.5 rounded-full bg-[var(--reelio-cyan)]" />
-              AI editing agent, built in
+              Reviewable edit automation
             </span>
 
             <h1 className="mt-6 text-balance text-[2.6rem] font-extrabold leading-[1.03] tracking-[-0.03em] text-white sm:text-6xl">
               Raw footage in.
               <br />
-              <GradientText>Finished edit out.</GradientText>
+              <GradientText>Editable first cut out.</GradientText>
             </h1>
 
             <p className="mt-6 text-pretty text-lg leading-relaxed text-zinc-400">
-              Reelio listens to your footage, cuts the dead air, writes the captions and hands back a real
-              timeline — one you can still open and edit frame by frame.
+              Reelio can detect real silence, propose timeline cuts, and render a review copy while keeping
+              every edit visible and reversible. Optional AI planning works when a provider is configured.
             </p>
 
             <div className="mt-9 flex flex-wrap items-center gap-3">
@@ -89,10 +89,10 @@ export function Hero() {
           <GlassCard id="hero-demo" className="scroll-mt-24 p-5 sm:p-7">
             <div className="mb-5 flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">
-                Silence removal
+                Silence removal example
               </span>
               <span className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-zinc-400">
-                live
+                illustrative demo
               </span>
             </div>
             <HeroDemo />

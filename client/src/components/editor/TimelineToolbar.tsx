@@ -4,14 +4,9 @@ import {
   Redo2,
   Scissors,
   Trash2,
-  Bookmark,
   Magnet,
-  Layers,
   Minus,
   Plus,
-  SplitSquareVertical,
-  Maximize2,
-  Sparkles,
   Zap,
 } from "lucide-react";
 
@@ -24,7 +19,6 @@ interface TimelineToolbarProps {
   onSplit: () => void;
   canDelete: boolean;
   onDelete: () => void;
-  onAddMarker: () => void;
   snapping: boolean;
   onToggleSnapping: () => void;
   currentTime: number;
@@ -52,7 +46,6 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
   onSplit,
   canDelete,
   onDelete,
-  onAddMarker,
   snapping,
   onToggleSnapping,
   currentTime,
@@ -74,6 +67,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
             canUndo ? "text-gray-300 hover:text-white hover:bg-white/[0.06]" : "text-gray-600 cursor-not-allowed"
           }`}
           title="Undo (Ctrl+Z)"
+          aria-label="Undo timeline edit"
         >
           <Undo2 className="w-3.5 h-3.5" />
         </button>
@@ -84,6 +78,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
             canRedo ? "text-gray-300 hover:text-white hover:bg-white/[0.06]" : "text-gray-600 cursor-not-allowed"
           }`}
           title="Redo (Ctrl+Y)"
+          aria-label="Redo timeline edit"
         >
           <Redo2 className="w-3.5 h-3.5" />
         </button>
@@ -120,16 +115,6 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
           <span>Delete</span>
         </button>
 
-        {/* MARKER Button */}
-        <button
-          onClick={onAddMarker}
-          className="h-7 px-2.5 rounded text-[11px] font-semibold flex items-center gap-1.5 bg-white/[0.04] text-gray-200 border border-white/[0.08] hover:bg-white/[0.08] uppercase tracking-wider transition-all"
-          title="Add Marker (M)"
-        >
-          <Bookmark className="w-3 h-3 text-sky-400" />
-          <span>Marker</span>
-        </button>
-
         {/* SNAPPING Toggle */}
         <button
           onClick={onToggleSnapping}
@@ -144,14 +129,6 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
           <span>Snapping</span>
         </button>
 
-        {/* GROUP Button */}
-        <button
-          className="h-7 px-2.5 rounded text-[11px] font-semibold flex items-center gap-1.5 bg-white/[0.04] text-gray-400 border border-white/[0.08] hover:text-white uppercase tracking-wider transition-all opacity-70 hover:opacity-100"
-          title="Group clips"
-        >
-          <Layers className="w-3 h-3" />
-          <span>Group</span>
-        </button>
       </div>
 
       {/* Center LCD Timecode Display */}
@@ -175,13 +152,6 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
         >
           <Zap className="w-3.5 h-3.5" />
         </button>
-
-        {/* View Mode icons */}
-        <div className="flex items-center bg-[#15151f] rounded p-0.5 border border-white/[0.08]">
-          <button className="w-6 h-6 rounded bg-sky-500/30 text-sky-300 flex items-center justify-center">
-            <SplitSquareVertical className="w-3 h-3" />
-          </button>
-        </div>
 
         {/* Zoom Stepper: - 2.48 px/sec + */}
         <div className="flex items-center bg-[#15151f] rounded border border-white/[0.08] px-1 py-0.5">

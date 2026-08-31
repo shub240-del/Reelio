@@ -12,6 +12,7 @@ vi.mock("./storage", () => ({
     url: `/mock-storage/${relKey}`,
   })),
   storageGetSignedUrl: vi.fn(async () => "https://example.com/mock-signed-url"),
+  storageDelete: vi.fn(async () => true),
 }));
 import { resetStore } from "./__mocks__/db";
 import { appRouter } from "./routers";
@@ -108,7 +109,7 @@ describe("clip operations - success paths", () => {
       base64Data,
       fileName: "test-video.mp4",
       mimeType: "video/mp4",
-      sizeBytes: 1024,
+      sizeBytes: Buffer.from(base64Data, "base64").length,
     });
     expect(asset.id).toBeDefined();
     expect(asset.name).toBe("test-video.mp4");
@@ -131,6 +132,16 @@ describe("clip operations - success paths", () => {
     const clips = await caller.clip.list({ projectId: project.id });
     expect(clips.length).toBeGreaterThan(0);
     expect(clips[0]?.id).toBe(clip.id);
+
+    const copy = await caller.project.duplicate({ id: project.id, name: "Clip Ops Copy" });
+    const [copyAssets, copyClips] = await Promise.all([
+      caller.asset.list({ projectId: copy.id }),
+      caller.clip.list({ projectId: copy.id }),
+    ]);
+    expect(copyAssets).toHaveLength(1);
+    expect(copyClips).toHaveLength(1);
+    expect(copyClips[0].assetId).toBe(copyAssets[0].id);
+    expect(copyClips[0].assetId).not.toBe(asset.id);
   });
 });
 

@@ -70,4 +70,13 @@ describe("ownership validation", () => {
 
     await expect(caller.clip.delete({ id: 99999 })).rejects.toThrow();
   });
+
+  it("marker, caption, and export lists reject unauthorized projects", async () => {
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+
+    await expect(caller.marker.list({ projectId: 99999 })).rejects.toThrow();
+    await expect(caller.caption.list({ projectId: 99999 })).rejects.toThrow();
+    await expect(caller.export.list({ projectId: 99999 })).rejects.toThrow();
+  });
 });

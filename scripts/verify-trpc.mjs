@@ -16,14 +16,15 @@ const checks = [
     expected: [200],
   },
   {
-    name: "project.list unauthenticated guard",
+    name: "project.list access policy",
     path: "/api/trpc/project.list",
     input: null,
-    expected: [401, 403],
+    expected: [200, 401, 403],
   },
 ];
 
 let failed = false;
+let authenticated = false;
 
 for (const check of checks) {
   const url = new URL(`${baseUrl}${check.path}`);
@@ -32,7 +33,16 @@ for (const check of checks) {
   try {
     const response = await fetch(url, { headers: { accept: "application/json" } });
     const body = await response.text();
-    const ok = check.expected.includes(response.status);
+    if (check.name === "auth.me" && response.ok) {
+      try {
+        authenticated = Boolean(JSON.parse(body)?.result?.data?.json);
+      } catch {
+        authenticated = false;
+      }
+    }
+    const projectAccessMatches = check.path !== "/api/trpc/project.list"
+      || (authenticated ? response.status === 200 : [401, 403].includes(response.status));
+    const ok = check.expected.includes(response.status) && projectAccessMatches;
     console.log(`${ok ? "PASS" : "FAIL"} ${check.name}: HTTP ${response.status}`);
     if (!ok) {
       console.log(`  response=${body.slice(0, 300)}`);

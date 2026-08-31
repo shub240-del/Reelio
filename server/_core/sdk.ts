@@ -32,9 +32,10 @@ class OAuthService {
   constructor(private client: ReturnType<typeof axios.create>) {
     console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl);
     if (!ENV.oAuthServerUrl) {
-      console.error(
-        "[OAuth] ERROR: OAUTH_SERVER_URL is not configured! Set OAUTH_SERVER_URL environment variable."
-      );
+      const message = ENV.isProduction
+        ? "[OAuth] OAUTH_SERVER_URL is not configured; production startup will be rejected."
+        : "[OAuth] OAUTH_SERVER_URL is not configured; development uses the local identity.";
+      console.warn(message);
     }
   }
 
@@ -273,19 +274,22 @@ class SDKServer {
     const session = await this.verifySession(sessionToken);
 
     if (!session) {
-      if (!ENV.isProduction || !ENV.oAuthServerUrl) {
+      if (!ENV.isProduction) {
         const localUser = await db.getUserByOpenId("local-dev-user");
         return (localUser ?? {
           id: 1,
           openId: "local-dev-user",
-          name: "Reelio Creator",
-          email: "creator@reelio.ai",
+          name: "Local Creator",
+          email: null,
           role: "admin",
           loginMethod: "local",
           createdAt: new Date(),
           updatedAt: new Date(),
           lastSignedIn: new Date(),
         }) as AuthenticatedUser;
+      }
+      if (!ENV.oAuthServerUrl) {
+        throw ForbiddenError("Authentication service is not configured");
       }
       throw ForbiddenError("Invalid session cookie");
     }

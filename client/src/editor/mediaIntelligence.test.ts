@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   detectFillerWords,
-  generateSpeechSegments,
   type WordTimestamp,
 } from "./mediaIntelligence";
 
@@ -32,29 +31,11 @@ describe("Media Intelligence & Evidence Extraction", () => {
     });
   });
 
-  it("partitions audio duration into speech windows around silence ranges", () => {
-    const silenceRanges = [
-      { start: 5.0, end: 8.0 },
-      { start: 15.0, end: 18.0 },
+  it("does not flag ordinary timestamped speech as filler evidence", () => {
+    const words: WordTimestamp[] = [
+      { word: "Welcome", start: 0, end: 0.4 },
+      { word: "everyone", start: 0.5, end: 1 },
     ];
-
-    const segments = generateSpeechSegments(25.0, "test-video.mp4", silenceRanges);
-    expect(segments.length).toBeGreaterThanOrEqual(2);
-    // First segment should end near 5.0s
-    expect(segments[0].start).toBe(0);
-    expect(segments[0].end).toBeLessThanOrEqual(5.0);
-
-    // All words must have valid sequential timestamps
-    for (const seg of segments) {
-      expect(seg.words.length).toBeGreaterThan(0);
-      for (let i = 1; i < seg.words.length; i++) {
-        expect(seg.words[i].start).toBeGreaterThanOrEqual(seg.words[i - 1].start);
-      }
-    }
-  });
-
-  it("handles zero or negative duration gracefully", () => {
-    expect(generateSpeechSegments(0, "empty.mp4")).toEqual([]);
-    expect(generateSpeechSegments(-5, "empty.mp4")).toEqual([]);
+    expect(detectFillerWords(words)).toEqual([]);
   });
 });

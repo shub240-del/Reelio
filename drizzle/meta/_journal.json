@@ -8,6 +8,13 @@
       "when": 1784983015199,
       "tag": "0000_fair_black_panther",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1788168576869,
+      "tag": "0001_eager_vindicator",
+      "breakpoints": true
     }
   ]
 }

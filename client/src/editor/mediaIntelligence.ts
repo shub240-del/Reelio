@@ -3,9 +3,8 @@
  *
  * Gathers objective, timestamped evidence from raw media files:
  * 1. Silence / pause detection via Web Audio API peak analysis
- * 2. Transcript segments with word-level presentation timestamps
- * 3. Filler-word candidates ("um", "uh", "like", "you know", etc.)
- * 4. Scene boundaries & speech activity regions
+ * 2. Transcript and filler-word evidence supplied by a real transcription
+ *    provider when one is connected
  *
  * CORE PRINCIPLE: NVIDIA NIM reasons over this evidence.
  * We never ask the AI to hallucinate timestamps.
@@ -112,95 +111,6 @@ export function detectFillerWords(words: WordTimestamp[]): FillerWordOccurrence[
 }
 
 /**
- * Creates synthetic or browser-speech-derived timestamped segments
- * when full cloud ASR is not configured or in offline/client mode.
- */
-export function generateSpeechSegments(
-  duration: number,
-  assetName: string,
-  silenceRanges: SilenceRange[] = [],
-): TranscriptSegment[] {
-  if (duration <= 0) return [];
-
-  // Determine active speech windows by subtracting silence intervals
-  const speechWindows: { start: number; end: number }[] = [];
-  let cursor = 0;
-
-  const sortedSilence = [...silenceRanges].sort((a, b) => a.start - b.start);
-  for (const s of sortedSilence) {
-    if (s.start > cursor + 0.3) {
-      speechWindows.push({ start: cursor, end: s.start });
-    }
-    cursor = Math.max(cursor, s.end);
-  }
-  if (cursor < duration - 0.3) {
-    speechWindows.push({ start: cursor, end: duration });
-  }
-
-  // If no silence was detected, partition duration into reasonable speech chunks (4-6s)
-  if (speechWindows.length === 0) {
-    const CHUNK_SIZE = 5.0;
-    const count = Math.ceil(duration / CHUNK_SIZE);
-    for (let i = 0; i < count; i++) {
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(duration, (i + 1) * CHUNK_SIZE);
-      if (end - start > 0.2) {
-        speechWindows.push({ start, end });
-      }
-    }
-  }
-
-  const sampleTokens = [
-    "Welcome",
-    "to",
-    "the",
-    "presentation",
-    "um",
-    "today",
-    "we",
-    "are",
-    "reviewing",
-    "the",
-    "video",
-    "timeline",
-    "uh",
-    "and",
-    "making",
-    "cuts",
-    "like",
-    "you know",
-    "seamlessly",
-  ];
-
-  return speechWindows.map((win, segIdx) => {
-    const segDuration = win.end - win.start;
-    const wordCount = Math.max(2, Math.floor(segDuration * 2.5));
-    const words: WordTimestamp[] = [];
-    const step = segDuration / wordCount;
-
-    for (let j = 0; j < wordCount; j++) {
-      const tokenIdx = (segIdx * 5 + j) % sampleTokens.length;
-      const wStart = Math.round((win.start + j * step) * 1000) / 1000;
-      const wEnd = Math.round((win.start + (j + 1) * step) * 1000) / 1000;
-      words.push({
-        word: sampleTokens[tokenIdx],
-        start: wStart,
-        end: wEnd,
-        confidence: 0.95,
-      });
-    }
-
-    return {
-      id: segIdx + 1,
-      text: words.map((w) => w.word).join(" "),
-      start: Math.round(win.start * 1000) / 1000,
-      end: Math.round(win.end * 1000) / 1000,
-      words,
-    };
-  });
-}
-
-/**
  * Extracts complete media intelligence evidence for a media asset.
  */
 export async function extractMediaEvidence(
@@ -217,21 +127,12 @@ export async function extractMediaEvidence(
     }
   }
 
-  const transcriptSegments = generateSpeechSegments(asset.duration, asset.name, silenceRanges);
-  const allWords = transcriptSegments.flatMap((s) => s.words);
-  const fillerWords = detectFillerWords(allWords);
-
-  // Scene boundaries (inferred from clip structure or media duration markers)
+  // Do not manufacture speech, filler words, or scene cuts. Until a real
+  // transcription/vision provider supplies timestamped evidence these remain
+  // empty and the AI layer must state that limitation.
+  const transcriptSegments: TranscriptSegment[] = [];
+  const fillerWords: FillerWordOccurrence[] = [];
   const sceneBoundaries: SceneBoundary[] = [];
-  if (asset.duration > 10) {
-    const sceneCount = Math.floor(asset.duration / 15);
-    for (let i = 1; i <= sceneCount; i++) {
-      sceneBoundaries.push({
-        time: Math.round(i * 15 * 100) / 100,
-        confidence: 0.88,
-      });
-    }
-  }
 
   return {
     mediaId: asset.id,

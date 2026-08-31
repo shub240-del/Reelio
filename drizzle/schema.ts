@@ -77,6 +77,8 @@ export const clips = mysqlTable("clips", {
   locked: boolean("locked").notNull().default(false),
   visible: boolean("visible").notNull().default(true),
   muted: boolean("muted").notNull().default(false),
+  videoFx: varchar("videoFx", { length: 64 }),
+  transition: varchar("transition", { length: 64 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

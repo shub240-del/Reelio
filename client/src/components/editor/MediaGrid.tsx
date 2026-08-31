@@ -1,6 +1,15 @@
 import React, { useRef, useState } from "react";
-import { Search, Upload, Plus, Film, Image as ImageIcon, Music, Trash2, CheckCircle2, ShieldCheck, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Search, Upload, Plus, Film, Music, Trash2, CheckCircle2, AlertTriangle, Loader2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export interface MediaAssetItem {
   id: number;
@@ -43,6 +52,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   const [search, setSearch] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<MediaAssetItem | null>(null);
 
   const filteredAssets = assets.filter((a) =>
     a.name.toLowerCase().includes(search.toLowerCase())
@@ -84,8 +94,11 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
         }}
       >
         {/* Add Media Upload Card */}
-        <div
+        <button
+          type="button"
           onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          aria-label={uploading ? "Importing media" : "Add media"}
           className={`aspect-[4/3] rounded-lg border-2 border-dashed flex flex-col items-center justify-center p-3 cursor-pointer transition-all ${
             isDragOver
               ? "border-sky-400 bg-sky-500/10 text-sky-300"
@@ -108,7 +121,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           <input
             ref={fileInputRef}
             type="file"
-            accept="video/*,audio/*,image/*"
+            accept="video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/ogg,audio/webm,audio/mp4"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -116,25 +129,22 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
               e.target.value = "";
             }}
           />
-        </div>
+        </button>
 
         {/* Existing Assets Grid */}
         {filteredAssets.map((asset) => {
           const isVideo = asset.mimeType.startsWith("video/");
-          const isImage = asset.mimeType.startsWith("image/");
           const isAudio = asset.mimeType.startsWith("audio/");
 
           return (
-            <div
+            <article
               key={asset.id}
-              onClick={() => onAddAssetToTimeline(asset)}
-              className="group relative aspect-[4/3] rounded-lg bg-[#181822] border border-white/[0.08] hover:border-sky-500/50 overflow-hidden cursor-pointer flex flex-col justify-between transition-all hover:shadow-lg hover:shadow-sky-500/5"
+              className="group relative aspect-[4/3] overflow-hidden rounded-lg border border-white/[0.08] bg-[#181822] transition-all hover:border-sky-500/50 hover:shadow-lg hover:shadow-sky-500/5 focus-within:border-sky-500/60"
             >
+              <button type="button" onClick={() => onAddAssetToTimeline(asset)} aria-label={`Add ${asset.name} to timeline`} className="absolute inset-0 z-10 cursor-pointer focus:outline-none"><span className="sr-only">Add {asset.name} to timeline</span></button>
               {/* Media Thumbnail View */}
               <div className="absolute inset-0 bg-[#12121a] flex items-center justify-center overflow-hidden">
-                {asset.url && isImage ? (
-                  <img src={asset.url} alt={asset.name} className="w-full h-full object-cover" />
-                ) : asset.url && isVideo ? (
+                {asset.url && isVideo ? (
                   <video src={asset.url} className="w-full h-full object-cover pointer-events-none" muted />
                 ) : (
                   <div className="flex flex-col items-center justify-center text-gray-500">
@@ -148,10 +158,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
               <div className="relative z-10 flex items-center justify-between p-1.5">
                 <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/80 text-white shadow-sm flex items-center gap-1">
                   <CheckCircle2 className="w-2.5 h-2.5" />
-                  Indexed
-                </span>
-                <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-medium bg-black/60 text-gray-300 backdrop-blur-xs">
-                  Hash ok
+                  {asset.duration > 0 ? "Ready" : "Needs metadata"}
                 </span>
               </div>
 
@@ -168,32 +175,52 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
               </div>
 
               {/* Hover Overlay Action (Add + Delete) */}
-              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 flex items-center justify-center gap-2">
+              <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2 bg-black/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                 <button
+                  type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     onAddAssetToTimeline(asset);
                   }}
-                  className="w-7 h-7 rounded-full bg-sky-500 text-white flex items-center justify-center hover:bg-sky-400 shadow-md"
+                  className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full bg-sky-500 text-white shadow-md hover:bg-sky-400"
                   title="Add to timeline"
+                  aria-label={`Add ${asset.name} to timeline`}
                 >
                   <Plus className="w-4 h-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDeleteAsset(asset);
+                    setDeleteTarget(asset);
                   }}
-                  className="w-7 h-7 rounded-full bg-red-500/80 text-white flex items-center justify-center hover:bg-red-500 shadow-md"
+                  className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full bg-red-500/80 text-white shadow-md hover:bg-red-500"
                   title="Delete media"
+                  aria-label={`Delete ${asset.name}`}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
-            </div>
+            </article>
           );
         })}
       </div>
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        {deleteTarget ? (
+          <AlertDialogContent className="max-w-sm border-red-500/25 bg-[#17171f] text-white shadow-2xl">
+            <AlertTriangle className="mb-3 h-6 w-6 text-red-400" />
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this media?</AlertDialogTitle>
+              <AlertDialogDescription className="leading-relaxed text-gray-400">This removes “{deleteTarget.name}” and every timeline clip that uses it. This cannot be undone.</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="mt-2">
+              <AlertDialogCancel className="border-white/10 bg-transparent text-white hover:bg-white/5 hover:text-white">Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={() => onDeleteAsset(deleteTarget)} className="bg-red-600 text-white hover:bg-red-500">Delete media</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        ) : null}
+      </AlertDialog>
     </div>
   );
 };

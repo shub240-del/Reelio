@@ -10,6 +10,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { assertServerConfiguration } from "./env";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -31,11 +32,12 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  assertServerConfiguration();
   const app = express();
   const server = createServer(app);
-  // Configure body parser with larger size limit for 4K / HD file uploads
-  app.use(express.json({ limit: "500mb" }));
-  app.use(express.urlencoded({ limit: "500mb", extended: true }));
+  // 50 MB binary uploads expand to roughly 67 MB as base64 JSON.
+  app.use(express.json({ limit: "70mb" }));
+  app.use(express.urlencoded({ limit: "70mb", extended: true }));
 
   // Keep local uploads outside dist so builds do not invalidate persisted media.
   const uploadsDir = path.resolve(process.cwd(), ".reelio", "uploads");
@@ -43,6 +45,9 @@ async function startServer() {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
   app.use("/uploads", express.static(uploadsDir));
+  app.use("/uploads", (_req, res) => {
+    res.status(404).json({ error: "Media file not found" });
+  });
 
   registerStorageProxy(app);
   registerOAuthRoutes(app);
@@ -73,4 +78,7 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+startServer().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -146,7 +146,7 @@ export function HeroDemo() {
           </span>
           <span className="text-[13px] font-medium text-zinc-300">
             {stage === "scanning"
-              ? "Analysing audio…"
+              ? "Example audio scan…"
               : stage === "found"
                 ? `Found ${SILENT_COUNT} silent spans`
                 : `Removed ${SILENT_COUNT} silent spans`}
@@ -170,7 +170,7 @@ export function HeroDemo() {
         viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
         className="w-full"
         role="img"
-        aria-label={`Audio waveform of a ${formatClock(TOTAL_SECONDS)} recording. Reelio detects ${SILENT_COUNT} silent spans and removes them, leaving ${formatClock(TOTAL_SECONDS - targetCutSeconds)}.`}
+        aria-label={`Illustrative waveform demonstrating how silence removal could shorten a ${formatClock(TOTAL_SECONDS)} recording to ${formatClock(TOTAL_SECONDS - targetCutSeconds)}.`}
       >
         <defs>
           <linearGradient id="reelio-wave" x1="0" y1="0" x2="0" y2="1">
@@ -213,7 +213,7 @@ export function HeroDemo() {
 
       {/* Result chips */}
       <div className="mt-5 flex flex-wrap items-center gap-2">
-        <Chip tone="violet">{SILENT_COUNT} spans detected</Chip>
+        <Chip tone="violet">Example: {SILENT_COUNT} spans</Chip>
         <Chip tone="cyan">
           {stage === "cutting"
             ? `${formatClock(cutSeconds)} of dead air cut`

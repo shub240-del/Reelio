@@ -4,11 +4,13 @@ import { appRouter } from "../server/routers";
 import { createContext } from "../server/_core/context";
 import { registerOAuthRoutes } from "../server/_core/oauth";
 import { registerStorageProxy } from "../server/_core/storageProxy";
+import { assertServerConfiguration } from "../server/_core/env";
 
+assertServerConfiguration();
 const app = express();
 
-app.use(express.json({ limit: "500mb" }));
-app.use(express.urlencoded({ limit: "500mb", extended: true }));
+app.use(express.json({ limit: "70mb" }));
+app.use(express.urlencoded({ limit: "70mb", extended: true }));
 
 registerStorageProxy(app);
 registerOAuthRoutes(app);

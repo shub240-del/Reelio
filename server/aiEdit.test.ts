@@ -207,6 +207,7 @@ describe("aiEdit service & provider integration", () => {
       clips: [],
       assets: [],
       silenceRanges: [],
+      transcriptSegments: [{ id: 1, text: "Hello world", start: 0, end: 2 }],
       playhead: 0,
     });
 
@@ -226,5 +227,10 @@ describe("appRouter ai endpoints", () => {
     const caller = appRouter.createCaller(createPublicContext());
     const health = await caller.ai.health();
     expect(typeof health.available).toBe("boolean");
+  });
+
+  it("ai.edit requires an authenticated user", async () => {
+    const caller = appRouter.createCaller(createPublicContext());
+    await expect(caller.ai.edit({ instruction: "Trim this", clips: [], assets: [] })).rejects.toThrow();
   });
 });

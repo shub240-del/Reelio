@@ -201,8 +201,40 @@ export class ExportEngine {
     source.preload = "auto";
     source.crossOrigin = "anonymous";
 
-    recorder.start(250);
     let currentSrc = "";
+    const loadSource = async (url: string) => {
+      if (currentSrc === url && source.readyState >= 1) return;
+      currentSrc = url;
+      source.src = url;
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          source.removeEventListener("loadedmetadata", onLoaded);
+          source.removeEventListener("error", onError);
+          error ? reject(error) : resolve();
+        };
+        const onLoaded = () => finish();
+        const onError = () => finish(new Error(`Source video could not be decoded: ${url}`));
+        source.addEventListener("loadedmetadata", onLoaded, { once: true });
+        source.addEventListener("error", onError, { once: true });
+        setTimeout(() => finish(new Error(`Timed out loading source video: ${url}`)), 5000);
+      });
+    };
+
+    // Prime a real frame before recording so the export does not begin black.
+    await loadSource(firstAsset.url);
+    source.currentTime = videoClips[0].sourceStart;
+    await new Promise<void>((resolve) => {
+      source.addEventListener("seeked", () => resolve(), { once: true });
+      setTimeout(resolve, 1200);
+    });
+    ctx.drawImage(source, 0, 0, width, height);
+
+    recorder.start(250);
+    const renderStartedAt = performance.now();
+    let frameIndex = 0;
 
     for (let time = 0; time <= end; time += 1 / FPS) {
       this.onProgress(Math.min(99, (time / end) * 100));
@@ -219,16 +251,7 @@ export class ExportEngine {
         const asset = this.assets.get(clip.assetId);
         if (asset?.url) {
           // Switch source if needed
-          if (source.src !== asset.url || currentSrc !== asset.url) {
-            source.src = asset.url;
-            currentSrc = asset.url;
-            await new Promise<void>((resolve, reject) => {
-              source.onloadedmetadata = () => resolve();
-              source.onerror = () =>
-                reject(new Error(`Source video could not be decoded: ${asset.url}`));
-              setTimeout(resolve, 2000);
-            });
-          }
+          await loadSource(asset.url);
 
           // Seek source to the correct frame
           const seekTo = clip.sourceStart + (time - clip.timelineStart);
@@ -286,7 +309,11 @@ export class ExportEngine {
         }
       }
 
-      await new Promise<void>((resolve) => setTimeout(resolve, FRAME_MS));
+      frameIndex += 1;
+      const remaining = renderStartedAt + frameIndex * FRAME_MS - performance.now();
+      if (remaining > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+      }
     }
 
     recorder.stop();

@@ -19,7 +19,7 @@ const LINKS = [
   { label: "Features", href: "#features" },
   { label: "How it works", href: "#workflow" },
   { label: "Templates", href: "#templates" },
-  { label: "Pricing", href: "#pricing" },
+  { label: "Get started", href: "#pricing" },
   { label: "FAQ", href: "#faq" },
   { label: "Contact", href: "#contact" },
 ] as const;
@@ -123,7 +123,7 @@ export function Nav() {
               href="/projects"
               className="reelio-focus hidden rounded-lg px-3 py-2 text-sm font-medium text-zinc-300 transition-colors hover:text-white sm:block"
             >
-              Sign in
+              Projects
             </Link>
             <Link
               href="/projects"

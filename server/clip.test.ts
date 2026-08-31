@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Use the in-memory mock so tests run without a live MySQL database.
 vi.mock("./db");
-import { resetStore } from "./__mocks__/db";
+import { createAsset, resetStore } from "./__mocks__/db";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
@@ -58,11 +58,20 @@ describe("clip operations", () => {
 
   it("clip.batchCommit atomically creates, updates, and deletes clips", async () => {
     const proj = await caller.project.create({ name: "Batch Project" });
+    const asset = await createAsset({
+      projectId: proj.id,
+      name: "batch.mp4",
+      storageKey: "test/batch.mp4",
+      url: "/uploads/batch.mp4",
+      mimeType: "video/mp4",
+      sizeBytes: 16,
+      duration: 15,
+    });
     const result = await caller.clip.batchCommit({
       projectId: proj.id,
       creates: [
         {
-          assetId: 1,
+          assetId: asset.id,
           trackId: 0,
           trackType: "video",
           sourceStart: 0,
@@ -71,7 +80,7 @@ describe("clip operations", () => {
           sortIndex: 0,
         },
         {
-          assetId: 1,
+          assetId: asset.id,
           trackId: 0,
           trackType: "video",
           sourceStart: 10,

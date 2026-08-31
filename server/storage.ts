@@ -109,3 +109,24 @@ export async function storageGetSignedUrl(relKey: string): Promise<string> {
   const { url } = (await resp.json()) as { url: string };
   return url;
 }
+
+/**
+ * Delete a locally stored object. The configured Forge API currently exposes
+ * only presigned reads/writes, so cloud deletion must be handled by that
+ * provider's retention policy and is reported as not completed here.
+ */
+export async function storageDelete(relKey: string): Promise<boolean> {
+  if (ENV.forgeApiUrl && ENV.forgeApiKey) return false;
+
+  const filePath = path.join(
+    path.resolve(process.cwd(), ".reelio", "uploads"),
+    path.basename(normalizeKey(relKey)),
+  );
+  try {
+    await fs.promises.unlink(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}

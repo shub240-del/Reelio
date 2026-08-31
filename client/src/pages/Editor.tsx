@@ -10,8 +10,6 @@ import {
   ChevronUp,
   Copy,
   Eye,
-  FileAudio,
-  FileImage,
   FileVideo,
   ListChecks,
   ListFilter,
@@ -59,7 +57,7 @@ import {
 } from "@/editor/interaction";
 import { useWaveform } from "@/hooks/useWaveform";
 import { isSupportedMedia, probeMedia } from "@/editor/media";
-import { AIChatBox, type Message } from "@/components/AIChatBox";
+import { type Message } from "@/components/AIChatBox";
 import {
   applyEditOps,
   describeOp,
@@ -72,13 +70,16 @@ import {
 } from "../../../shared/editOps";
 import { detectSilenceRanges } from "@/editor/silence";
 import { extractMediaEvidence } from "@/editor/mediaIntelligence";
-import { generateDemoCaptions, getActiveCue } from "@/editor/captions";
+import { getActiveCue } from "@/editor/captions";
+import { planEditorRequest } from "@/editor/ai";
+import { currentMode } from "@/guest/link";
 import { LeftCategoryNav, type CategoryTab, type MediaSubTab } from "@/components/editor/LeftCategoryNav";
 import { MediaGrid } from "@/components/editor/MediaGrid";
 import { AIAgentPanel } from "@/components/editor/AIAgentPanel";
 import { FloatingPlayerControls } from "@/components/editor/FloatingPlayerControls";
 import { TimelineToolbar } from "@/components/editor/TimelineToolbar";
 import { MultiTrackTimeline } from "@/components/editor/MultiTrackTimeline";
+import { exportTimeline } from "@/editor/export";
 
 /* ─── Types ─── */
 interface TimelineClip {
@@ -114,28 +115,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function probeAudio(file: File): Promise<{ duration: number }> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const audio = new Audio();
-    audio.preload = "metadata";
-    audio.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve({ duration: Number.isFinite(audio.duration) ? audio.duration : 0 }); };
-    audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error("This audio file could not be decoded")); };
-    audio.src = url;
-  });
-}
-
-function probeImage(file: File): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => { URL.revokeObjectURL(url); resolve({ width: image.naturalWidth, height: image.naturalHeight }); };
-    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error("This image file could not be decoded")); };
-    image.src = url;
-  });
-}
-
-function fileToBase64(file: File): Promise<string> {
+function fileToBase64(file: File, onProgress?: (progress: number) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -144,6 +124,9 @@ function fileToBase64(file: File): Promise<string> {
       resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
     };
     reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+    reader.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.((event.loaded / event.total) * 70);
+    };
     reader.readAsDataURL(file);
   });
 }
@@ -271,21 +254,6 @@ export default function Editor() {
     toast.info(`Track ${trackKey} ${!trackStates[trackKey]?.visible ? "visible" : "hidden"}`);
   };
 
-  const handleApplyTransition = async (transitionName: string) => {
-    if (!activeClip) {
-      toast.info("Select a video clip first to apply transition");
-      return;
-    }
-    try {
-      recordHistory(`Apply ${transitionName} transition`);
-      await updateClipMutation.mutateAsync({ id: activeClip.id, transition: transitionName } as any);
-      await refetchClips();
-      toast.success(`Applied ${transitionName} to ${activeClip.assetName}`);
-    } catch (err) {
-      toast.error("Failed to apply transition: " + (err instanceof Error ? err.message : "Unknown error"));
-    }
-  };
-
   const handleApplyVideoFx = async (fxName: string) => {
     if (!activeClip) {
       toast.info("Select a video clip first to apply video effect");
@@ -302,7 +270,8 @@ export default function Editor() {
   };
 
   /* Data fetching */
-  const { data: project } = trpc.project.get.useQuery({ id: projId }, { enabled: !!user });
+  const projectQuery = trpc.project.get.useQuery({ id: projId }, { enabled: !!user && projId > 0 });
+  const project = projectQuery.data;
   const { data: assets, refetch: refetchAssets } = trpc.asset.list.useQuery(
     { projectId: projId },
     { enabled: !!user && projId > 0 }
@@ -311,6 +280,7 @@ export default function Editor() {
     { projectId: projId },
     { enabled: !!user && projId > 0 }
   );
+  const { data: aiHealth } = trpc.ai.health.useQuery();
 
   /* Mutation hooks */
   const uploadMutation = trpc.asset.upload.useMutation();
@@ -366,6 +336,8 @@ export default function Editor() {
         locked: clip.locked,
         visible: clip.visible,
         muted: clip.muted,
+        videoFx: clip.videoFx,
+        transition: clip.transition,
       } as any),
     updateClip: (patch) => updateClipMutation.mutateAsync(patch as any),
     deleteClip: (id) => deleteClipMutation.mutateAsync({ id }),
@@ -447,7 +419,8 @@ export default function Editor() {
     }
   }, [projId]);
 
-  const activeClip = getActiveClip(timelineClips, currentTime);
+  const playbackClip = getActiveClip(timelineClips, currentTime);
+  const activeClip = selectedClips[0] ?? playbackClip;
   const activeAudioClips = timelineClips.filter(
     (clip) =>
       clip.trackType === "audio" &&
@@ -481,202 +454,57 @@ export default function Editor() {
     }
   }, [activeAudioClips, currentTime, isPlaying, trackStates]);
 
-  const handleExport = async () => {
-    if (exporting || timelineClips.length === 0) return;
-    const videoClips = timelineClips.filter(
-      (clip) =>
-        clip.trackType === "video" &&
-        clip.visible !== false &&
-        trackStates.video0?.visible !== false &&
-        clip.duration > 0,
-    );
-    if (videoClips.length === 0) {
-      toast.error("Add a visible video clip before exporting");
-      return;
+  const handleExport = useCallback(async (): Promise<boolean> => {
+    if (exporting || timelineClips.length === 0) {
+      toast.error("Add media to the timeline before exporting.");
+      return false;
     }
-    const firstAsset = (assets ?? []).find((asset) => asset.id === videoClips[0].assetId);
-    if (!firstAsset?.url) {
-      toast.error("The video source is not available");
-      return;
-    }
-    setExporting(true);
-    setExportProgress(0);
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = firstAsset.width || 1280;
-      canvas.height = firstAsset.height || 720;
-      const ctx2d = canvas.getContext("2d");
-      if (!ctx2d || typeof canvas.captureStream !== "function" || typeof MediaRecorder === "undefined") {
-        throw new Error("This browser does not support browser-side video export");
-      }
-
-      // ── Audio mixing setup (gracefully omitted if AudioContext is unavailable) ──
-      const AudioCtor =
-        window.AudioContext ??
-        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      const audioCtx = AudioCtor ? new AudioCtor() : null;
-      const audioDest = audioCtx?.createMediaStreamDestination() ?? null;
-
-      type AudioEntry = { el: HTMLAudioElement; clip: TimelineClip };
-      const audioEntries: AudioEntry[] = [];
-
-      if (audioCtx && audioDest) {
-        const audibleClips = timelineClips.filter((c) => {
-          if (c.muted || c.visible === false || !c.assetUrl) return false;
-          const trackKey = c.trackType === "video" ? "video0" : c.trackId === 0 ? "audio0" : "audio1";
-          if (trackStates[trackKey]?.muted || trackStates[trackKey]?.visible === false) return false;
-          const asset = (assets ?? []).find((a) => a.id === c.assetId);
-          return c.trackType === "audio" || asset?.hasAudio;
-        });
-        for (const clip of audibleClips) {
-          try {
-            const el = document.createElement("audio");
-            el.crossOrigin = "anonymous";
-            el.src = clip.assetUrl;
-            el.preload = "auto";
-            await new Promise<void>((resolve) => {
-              el.addEventListener("loadedmetadata", () => resolve(), { once: true });
-              el.addEventListener("error", () => resolve(), { once: true }); // non-fatal
-              setTimeout(resolve, 3000);
-            });
-            const srcNode = audioCtx.createMediaElementSource(el);
-            srcNode.connect(audioDest);
-            audioEntries.push({ el, clip });
-          } catch {
-            // Non-decodable audio clip — skip gracefully
-          }
-        }
-      }
-
-      // ── Combined stream & recorder ──
-      const canvasStream = canvas.captureStream(30);
-      const streamTracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
-      if (audioDest) streamTracks.push(...audioDest.stream.getAudioTracks());
-      const recordStream = new MediaStream(streamTracks);
-
-      const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
-        ? "video/webm;codecs=vp9"
-        : "video/webm";
-      const chunks: Blob[] = [];
-      const recorder = new MediaRecorder(recordStream, { mimeType });
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunks.push(event.data);
+    const exportClips = timelineClips.map((clip) => {
+      const trackKey = clip.trackType === "video" ? "video0" : clip.trackId === 0 ? "audio0" : "audio1";
+      const trackState = trackStates[trackKey];
+      return {
+        ...clip,
+        visible: clip.visible !== false && trackState?.visible !== false,
+        muted: clip.muted || trackState?.muted === true,
       };
-      const stopped = new Promise<Blob>((resolve) => {
-        recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType }));
-      });
-
-      const source = document.createElement("video");
-      source.muted = true;
-      source.playsInline = true;
-      source.preload = "auto";
-      source.crossOrigin = "anonymous";
-
-      // Decode the first source before recording. Starting MediaRecorder before
-      // this seek causes setup latency to be encoded as leading black/silence,
-      // making the downloaded duration longer than the timeline.
-      source.src = firstAsset.url;
-      await new Promise<void>((resolve, reject) => {
-        source.onloadedmetadata = () => resolve();
-        source.onerror = () => reject(new Error("The first timeline source could not be decoded"));
-      });
-      source.currentTime = firstAsset.duration > 0 ? 0 : 0;
-
-      recorder.start(250);
-      const exportWallStart = performance.now();
-      const end = timelineContentEnd(timelineClips);
-
-      for (let time = 0; time <= end; time += 1 / 30) {
-        setExportProgress(Math.min(99, (time / end) * 100));
-
-        const clip = videoClips.find(
-          (candidate) =>
-            time >= candidate.timelineStart &&
-            time < candidate.timelineStart + candidate.duration,
-        );
-        ctx2d.fillStyle = "#000";
-        ctx2d.fillRect(0, 0, canvas.width, canvas.height);
-        if (clip) {
-          const asset = (assets ?? []).find((candidate) => candidate.id === clip.assetId);
-          if (asset?.url) {
-            if (source.src !== asset.url) {
-              source.src = asset.url;
-              await new Promise<void>((resolve, reject) => {
-                source.onloadedmetadata = () => resolve();
-                source.onerror = () => reject(new Error("A timeline source could not be decoded"));
-              });
-            }
-            source.currentTime = clip.sourceStart + (time - clip.timelineStart);
-            await new Promise<void>((resolve) => {
-              const done = () => {
-                source.removeEventListener("seeked", done);
-                resolve();
-              };
-              source.addEventListener("seeked", done, { once: true });
-              setTimeout(done, 1000);
-            });
-            ctx2d.drawImage(source, 0, 0, canvas.width, canvas.height);
-          }
-        }
-
-        // Sync audio elements to the current export position so audio data
-        // flows through the AudioContext → MediaStreamDestination → recorder.
-        for (const { el, clip: audioClip } of audioEntries) {
-          const srcTime = audioClip.sourceStart + (time - audioClip.timelineStart);
-          if (
-            time >= audioClip.timelineStart &&
-            time < audioClip.timelineStart + audioClip.duration
-          ) {
-            if (Math.abs(el.currentTime - srcTime) > 0.15) el.currentTime = srcTime;
-            void el.play().catch(() => undefined);
-          } else if (!el.paused) {
-            el.pause();
-          }
-        }
-
-        // MediaRecorder timestamps real wall-clock time. Wait only until the
-        // synthetic timeline deadline; seek/decode latency is already part of
-        // the elapsed time and must not be added once per frame.
-        const deadline = exportWallStart + time * 1000;
-        const remaining = deadline - performance.now();
-        if (remaining > 0) {
-          await new Promise<void>((resolve) => setTimeout(resolve, remaining));
-        }
-      }
-
-      recorder.stop();
-      const blob = await stopped;
-
-      // Cleanup
-      for (const { el } of audioEntries) {
-        el.pause();
-        el.src = "";
-      }
-      if (audioCtx) void audioCtx.close();
-      source.pause();
-      source.removeAttribute("src");
-      source.load();
-      canvasStream.getTracks().forEach((track) => track.stop());
-      recordStream.getTracks().forEach((track) => track.stop());
-
-      if (blob.size === 0) throw new Error("Export produced an empty file");
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${project?.name || "reelio-export"}.webm`;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      const hasAudio = audioEntries.length > 0;
-      toast.success(
-        `Exported ${Math.round(blob.size / 1024)} KB WebM${hasAudio ? " with audio" : ""}`,
+    });
+    const hasVideo = exportClips.some(
+      (clip) => clip.trackType === "video" && clip.visible !== false && clip.duration > 0,
+    );
+    if (!hasVideo) {
+      toast.error("Add at least one visible video clip to export.");
+      return false;
+    }
+    try {
+      setExporting(true);
+      setExportProgress(0);
+      toast.info("Rendering project to WebM...");
+      const result = await exportTimeline(
+        project?.name || "reelio-export",
+        exportClips,
+        (assets ?? []).map((a) => ({
+          id: a.id,
+          url: a.url,
+          width: a.width || 1280,
+          height: a.height || 720,
+          duration: a.duration,
+          hasAudio: a.hasAudio ?? false,
+          fps: a.fps ?? 30,
+        })),
+        captions,
+        (pct) => setExportProgress(pct)
       );
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Export failed");
+      toast.success(`Export complete! (${result.sizeKb} KB)`);
+      return true;
+    } catch (err) {
+      toast.error("Export failed: " + (err instanceof Error ? err.message : "Unknown error"));
+      return false;
     } finally {
       setExporting(false);
       setExportProgress(0);
     }
-  };
+  }, [assets, captions, exporting, project?.name, timelineClips, trackStates]);
+
 
   /* Mutation for AI edit — calls NVIDIA NIM on the server */
   const aiEditMutation = trpc.ai.edit.useMutation();
@@ -892,12 +720,14 @@ export default function Editor() {
       }
 
       if (lower === "export" || lower === "export video" || lower === "render video") {
-        void handleExport();
+        const completed = await handleExport();
         setAiMessages((msgs) => [
           ...msgs,
           {
             role: "assistant",
-            content: "Started browser video export for the current timeline composition.",
+            content: completed
+              ? "The browser export completed and the WebM download was created."
+              : "The export did not complete. Check the export notification for the specific reason.",
           },
         ]);
         return;
@@ -905,19 +735,12 @@ export default function Editor() {
 
       const latestAssets = (await refetchAssets()).data ?? assets ?? [];
 
-      // Caption generation is handled client-side if requested
       if (/^(generate|add) captions?\.?$/i.test(content.trim())) {
-        const cues = generateDemoCaptions(timelineClips);
-        setCaptions(cues);
-        if (projId > 0) localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(cues));
         setAiMessages((msgs) => [
           ...msgs,
           {
             role: "assistant",
-            content:
-              cues.length > 0
-                ? `Generated ${cues.length} caption cue${cues.length === 1 ? "" : "s"} across the timeline. They are now visible on the Captions track.`
-                : "No clips on the timeline to generate captions for.",
+            content: "Caption transcription is not available yet. Reelio will not invent caption text from filenames; connect a speech-to-text provider before using this feature.",
           },
         ]);
         return;
@@ -975,6 +798,35 @@ export default function Editor() {
         hasAudio: a.hasAudio ?? false,
       }));
 
+      const isDeterministicRequest =
+        /^remove the first 5 seconds?\.?$/i.test(content.trim()) ||
+        /^remove silence\.?$/i.test(content.trim()) ||
+        /^remove silence from the video\.?$/i.test(content.trim());
+      if (isDeterministicRequest) {
+        const normalizedRequest = lower.startsWith("remove silence") ? "Remove silence." : content;
+        const plan = planEditorRequest(normalizedRequest, timelineClips, allSilenceRanges);
+        if (plan.operations.length === 0) {
+          setAiMessages((messages) => [...messages, { role: "assistant", content: plan.summary }]);
+          return;
+        }
+        setPendingPlan(plan);
+        setSelectedOpIndices(plan.operations.map((_, index) => index));
+        setReviewInstruction(content);
+        setAiMessages((messages) => [...messages, { role: "assistant", content: `${plan.summary} Review the proposed operation before applying it.` }]);
+        return;
+      }
+
+      if (!aiHealth?.available) {
+        setAiMessages((messages) => [
+          ...messages,
+          {
+            role: "assistant",
+            content: "The optional AI planning provider is not configured. Deterministic commands such as “Remove the first 5 seconds” still work.",
+          },
+        ]);
+        return;
+      }
+
       // Call NVIDIA NIM through the server — key never leaves the server
       const { plan } = await aiEditMutation.mutateAsync({
         instruction: content,
@@ -1025,27 +877,8 @@ export default function Editor() {
   };
 
   const handleExecuteQuickAction = (actionType: string) => {
-    if (actionType === "captions") {
-      const cues = generateDemoCaptions(timelineClips);
-      setCaptions(cues);
-      if (projId > 0) localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(cues));
-      toast.success(`Generated ${cues.length} caption cues on timeline`);
-      setAiMessages((msgs) => [
-        ...msgs,
-        {
-          role: "assistant",
-          content: `Generated ${cues.length} caption cue${cues.length === 1 ? "" : "s"} across the timeline. They are now placed on the Captions track.`,
-        },
-      ]);
-    } else if (actionType === "silence") {
-      handleAISendMessage("Remove silence from the video.");
-    } else if (actionType === "restarts") {
-      handleAISendMessage("Detect and remove restart phrases and repeated takes.");
-    } else if (actionType === "fillers") {
-      handleAISendMessage("Remove filler words.");
-    } else if (actionType === "firsttakes") {
-      handleAISendMessage("Remove first takes and warmup intro.");
-    }
+    if (actionType === "silence") void handleAISendMessage("Remove silence.");
+    if (actionType === "first-five") void handleAISendMessage("Remove the first 5 seconds.");
   };
 
 
@@ -1092,42 +925,44 @@ export default function Editor() {
   const handleFileUpload = useCallback(
     async (file: File) => {
       if (!isSupportedMedia(file)) {
-        toast.error("Please select a supported video, image, or audio file");
+        toast.error("Please select a supported video or audio file");
         return;
       }
-      const isImage = file.type.startsWith("image/");
-      const isAudio = file.type.startsWith("audio/");
-      const isVideo = file.type.startsWith("video/") || !isImage && !isAudio;
+      const mode = currentMode();
+      if (mode !== "guest" && file.size > 50 * 1024 * 1024) {
+        toast.error("Cloud uploads are limited to 50 MB in this build.");
+        return;
+      }
       setUploading(true);
       setUploadProgress(0);
-      let progressInterval: ReturnType<typeof setInterval> | undefined;
       try {
-        let metadata = { duration: 0, width: 0, height: 0, fps: 0, hasAudio: isAudio };
-        if (isVideo) metadata = await probeMedia(file);
-        else if (isImage) {
-          const image = await probeImage(file);
-          metadata = { ...metadata, ...image, duration: 5 };
-        } else {
-          metadata = { ...metadata, ...(await probeAudio(file)) };
-        }
-        const base64 = await fileToBase64(file);
-        progressInterval = setInterval(() => setUploadProgress((p) => Math.min(p + Math.random() * 15, 90)), 200);
-        await uploadMutation.mutateAsync({
+        const metadata = await probeMedia(file);
+        setUploadProgress(10);
+        const mimeType = file.type || (metadata.mimeType.startsWith("audio/") ? metadata.mimeType : "video/mp4");
+        const commonPayload = {
           projectId: projId,
-          base64Data: base64,
           fileName: file.name,
-          mimeType: file.type || "application/octet-stream",
+          mimeType,
           sizeBytes: file.size,
           duration: metadata.duration,
           width: metadata.width,
           height: metadata.height,
           fps: metadata.fps,
           hasAudio: metadata.hasAudio,
-        });
-        if (progressInterval) clearInterval(progressInterval);
+        };
+        if (mode === "guest") {
+          setUploadProgress(70);
+          await uploadMutation.mutateAsync({ ...commonPayload, blob: file } as any);
+        } else {
+          const base64 = await fileToBase64(file, setUploadProgress);
+          setUploadProgress(75);
+          await uploadMutation.mutateAsync({ ...commonPayload, base64Data: base64 });
+        }
         setUploadProgress(100);
         const newAssets = await refetchAssets();
-        const newAsset = newAssets.data?.find((asset) => asset.name === file.name && asset.sizeBytes === file.size) ?? newAssets.data?.[newAssets.data.length - 1];
+        const newAsset = [...(newAssets.data ?? [])]
+          .filter((asset) => asset.name === file.name && asset.sizeBytes === file.size)
+          .sort((a, b) => b.id - a.id)[0];
         if (newAsset && newAsset.duration > 0) {
           await handleAddAssetToTimeline(newAsset);
         } else {
@@ -1135,7 +970,6 @@ export default function Editor() {
         }
         setTimeout(() => { setUploading(false); setUploadProgress(0); }, 500);
       } catch (err) {
-        if (progressInterval) clearInterval(progressInterval);
         setUploading(false);
         setUploadProgress(0);
         toast.error("Upload failed: " + (err instanceof Error ? err.message : "Unknown error"));
@@ -1144,13 +978,13 @@ export default function Editor() {
     [handleAddAssetToTimeline, projId, refetchAssets, timelineClips, timelineClips.length, uploadMutation]
   );
 
-  /* Video preview sync - when active clip changes, switch the video source */
+  /* Video preview follows the playhead, independently of inspector selection. */
   useEffect(() => {
-    if (activeClip && previewVideoRef.current) {
+    if (playbackClip && previewVideoRef.current) {
       const video = previewVideoRef.current;
       const sourceTime = Math.max(
-        activeClip.sourceStart,
-        currentTime - activeClip.timelineStart + activeClip.sourceStart
+        playbackClip.sourceStart,
+        currentTime - playbackClip.timelineStart + playbackClip.sourceStart
       );
       if (Math.abs(video.currentTime - sourceTime) > 0.05) {
         video.currentTime = sourceTime;
@@ -1160,20 +994,20 @@ export default function Editor() {
         void video.play().catch(() => setIsPlaying(false));
       }
     }
-  }, [activeClip?.id, currentTime, isPlaying]);
+  }, [playbackClip?.id, currentTime, isPlaying]);
 
   /* Video time sync from preview video */
   const handlePreviewTimeUpdate = () => {
-    if (!activeClip || !previewVideoRef.current) return;
+    if (!playbackClip || !previewVideoRef.current) return;
     const sourceTime = previewVideoRef.current.currentTime;
-    const timelineTime = activeClip.timelineStart + (sourceTime - activeClip.sourceStart);
+    const timelineTime = playbackClip.timelineStart + (sourceTime - playbackClip.sourceStart);
     setCurrentTime(timelineTime);
   };
 
   const handlePreviewLoadedMetadata = () => {
-    if (!activeClip || !previewVideoRef.current) return;
+    if (!playbackClip || !previewVideoRef.current) return;
     previewVideoRef.current.currentTime =
-      Math.max(activeClip.sourceStart, currentTime - activeClip.timelineStart + activeClip.sourceStart);
+      Math.max(playbackClip.sourceStart, currentTime - playbackClip.timelineStart + playbackClip.sourceStart);
     if (autoplayNextRef.current) {
       autoplayNextRef.current = false;
       void previewVideoRef.current.play().catch(() => setIsPlaying(false));
@@ -1565,21 +1399,33 @@ export default function Editor() {
     );
   }
 
+  if (!Number.isInteger(projId) || projId <= 0 || projectQuery.isLoading) {
+    return <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center text-sm text-gray-300"><Loader2 className="mr-2 h-5 w-5 animate-spin" />Loading project…</div>;
+  }
+
+  if (projectQuery.error || !project) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-6 text-white">
+        <div className="max-w-md text-center"><AlertTriangle className="mx-auto mb-3 h-8 w-8 text-amber-400" /><h1 className="text-xl font-semibold">Project unavailable</h1><p className="mt-2 text-sm text-gray-400">It may have been deleted, or you may not have access to it.</p><Link href="/projects"><Button className="mt-5">Back to projects</Button></Link></div>
+      </div>
+    );
+  }
+
   return (
-    <div className="h-screen bg-[#0a0a0f] flex flex-col overflow-hidden text-white font-sans select-none">
+    <div className="min-h-screen lg:h-screen bg-[#0a0a0f] flex flex-col overflow-y-auto lg:overflow-hidden text-white font-sans select-none">
       {/* Top Header Bar */}
-      <header className="h-11 bg-[#0c0c12] border-b border-white/[0.07] flex items-center justify-between px-4 flex-shrink-0 z-30">
-        <div className="flex items-center gap-3">
+      <header className="min-h-11 bg-[#0c0c12] border-b border-white/[0.07] flex items-center justify-between gap-2 px-2 sm:px-4 flex-shrink-0 z-30">
+        <div className="flex min-w-0 items-center gap-1 sm:gap-3">
           <Link href="/projects">
             <Button variant="ghost" size="sm" className="text-gray-400 hover:text-white gap-1.5 h-7 px-2 text-xs">
               <ArrowLeft className="w-3.5 h-3.5" />
-              Back
+              <span className="hidden sm:inline">Back</span>
             </Button>
           </Link>
           <div className="flex items-center gap-2">
-            <span className="text-white font-semibold text-xs tracking-wide">{project?.name || "Video Project 8.mp4"}</span>
+            <span className="max-w-[120px] truncate text-white font-semibold text-xs tracking-wide sm:max-w-xs">{project.name}</span>
             <span className="text-sky-400 text-[10px] font-mono px-2 py-0.5 bg-sky-500/10 border border-sky-500/20 rounded-full">
-              {project?.status || "editing"}
+              {project.status}
             </span>
           </div>
         </div>
@@ -1597,9 +1443,9 @@ export default function Editor() {
       </header>
 
       {/* Main Workspace 3-Column Area */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
+      <div className="flex min-h-0 flex-1 flex-col overflow-visible lg:flex-row lg:overflow-hidden">
         {/* Left Column: Category Navigation + Media Library / Effects */}
-        <div className="w-80 min-w-[320px] max-w-[360px] flex flex-col h-full bg-[#111116] border-r border-white/[0.07] flex-shrink-0">
+        <div className="flex h-[420px] w-full min-w-0 max-w-none flex-shrink-0 flex-col border-b border-white/[0.07] bg-[#111116] lg:h-full lg:w-80 lg:min-w-[320px] lg:max-w-[360px] lg:border-b-0 lg:border-r">
           <LeftCategoryNav
             activeCategory={activeCategory}
             onSelectCategory={setActiveCategory}
@@ -1620,10 +1466,11 @@ export default function Editor() {
               {["Cinematic LUT", "Vibrant HDR", "Film Grain", "Vignette Blur", "Glow Accent", "Sharpen"].map((fx, i) => {
                 const isActive = activeClip?.videoFx === fx;
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={i}
                     onClick={() => handleApplyVideoFx(fx)}
-                    className={`p-3 rounded-lg border cursor-pointer text-center transition-all ${
+                    className={`p-3 rounded-lg border cursor-pointer text-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${
                       isActive
                         ? "bg-sky-500/20 border-sky-400 text-sky-200 shadow-md shadow-sky-500/20"
                         : "bg-[#181822] border-white/[0.08] hover:border-sky-400 text-gray-200"
@@ -1632,41 +1479,7 @@ export default function Editor() {
                     <Sparkles className={`w-5 h-5 mx-auto mb-1.5 ${isActive ? "text-sky-300" : "text-sky-400"}`} />
                     <span className="text-xs font-medium">{fx}</span>
                     {isActive && <div className="text-[9px] text-sky-300 font-mono mt-0.5">Applied</div>}
-                  </div>
-                );
-              })}
-            </div>
-          ) : activeCategory === "audiofx" ? (
-            <div className="p-3 space-y-2 overflow-y-auto no-scrollbar">
-              {["Vocal Clarity Enhance", "Noise Suppression", "Bass Punch", "Reverb Hall", "Limiter & Gate"].map((fx, i) => (
-                <div
-                  key={i}
-                  onClick={() => toast.success(`Applied ${fx} audio filter`)}
-                  className="p-2.5 rounded-lg bg-[#181822] border border-white/[0.08] hover:border-purple-400 cursor-pointer flex items-center justify-between transition-all"
-                >
-                  <span className="text-xs font-medium text-gray-200">{fx}</span>
-                  <Volume2 className="w-4 h-4 text-purple-400" />
-                </div>
-              ))}
-            </div>
-          ) : activeCategory === "transitions" ? (
-            <div className="p-3 grid grid-cols-2 gap-2 overflow-y-auto no-scrollbar">
-              {["Cross Dissolve", "Dip to Black", "Zoom Wipe", "Glitch Pulse", "Push Left", "Slide Down"].map((tr, i) => {
-                const isActive = activeClip?.transition === tr;
-                return (
-                  <div
-                    key={i}
-                    onClick={() => handleApplyTransition(tr)}
-                    className={`p-3 rounded-lg border cursor-pointer text-center transition-all ${
-                      isActive
-                        ? "bg-emerald-500/20 border-emerald-400 text-emerald-200 shadow-md shadow-emerald-500/20"
-                        : "bg-[#181822] border-white/[0.08] hover:border-emerald-400 text-gray-200"
-                    }`}
-                  >
-                    <Sparkles className={`w-5 h-5 mx-auto mb-1.5 ${isActive ? "text-emerald-300" : "text-emerald-400"}`} />
-                    <span className="text-xs font-medium">{tr}</span>
-                    {isActive && <div className="text-[9px] text-emerald-300 font-mono mt-0.5">Applied</div>}
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -1687,7 +1500,7 @@ export default function Editor() {
               ) : (
                 <div className="p-4 text-center text-gray-500">
                   <FileText className="w-6 h-6 mx-auto mb-2 opacity-50" />
-                  No transcript generated yet. Click "Auto Captions" in the AI Agent.
+                  No transcript is available. Connect a speech-to-text provider before generating captions.
                 </div>
               )}
             </div>
@@ -1698,15 +1511,7 @@ export default function Editor() {
                 <div className="space-y-3">
                   <div className="p-2.5 rounded bg-[#181822] border border-white/[0.08]">
                     <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Clip Name</div>
-                    <input
-                      type="text"
-                      value={activeClip.assetName}
-                      onChange={(e) => {
-                        recordHistory("Rename clip");
-                        void updateClipMutation.mutateAsync({ id: activeClip.id, assetName: e.target.value } as any).then(() => refetchClips());
-                      }}
-                      className="w-full bg-[#101016] border border-white/[0.1] rounded px-2 py-1 text-xs text-sky-300 font-medium focus:outline-none focus:border-sky-400"
-                    />
+                    <div className="truncate text-xs font-medium text-sky-300" title={activeClip.assetName}>{activeClip.assetName}</div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="p-2 rounded bg-[#181822] border border-white/[0.08]">
@@ -1765,28 +1570,28 @@ export default function Editor() {
         </div>
 
         {/* Center Column: Video Preview Viewport & Floating Player Bar */}
-        <div className="flex-1 flex flex-col min-w-0 bg-black relative items-center justify-between p-4 overflow-hidden">
+        <div className="relative flex min-h-[420px] min-w-0 flex-1 flex-col items-center justify-between overflow-hidden bg-black p-2 sm:p-4">
           {/* Video Preview Canvas Viewport */}
           <div className="w-full flex-1 flex items-center justify-center relative overflow-hidden rounded-lg bg-[#050508] border border-white/[0.05]">
-            {activeClip?.assetUrl && trackStates.video0?.visible !== false ? (
+            {playbackClip?.assetUrl && playbackClip.trackType === "video" && trackStates.video0?.visible !== false ? (
               <video
                 ref={previewVideoRef}
-                src={activeClip.assetUrl}
-                  muted={activeClip.muted || isMuted || trackStates.video0?.muted === true || !((assets ?? []).find((asset) => asset.id === activeClip.assetId)?.hasAudio)}
+                src={playbackClip.assetUrl}
+                muted={playbackClip.muted || isMuted || trackStates.video0?.muted === true || !((assets ?? []).find((asset) => asset.id === playbackClip.assetId)?.hasAudio)}
                 playsInline
                 style={{
                   filter:
-                    activeClip.videoFx === "Cinematic LUT"
+                    playbackClip.videoFx === "Cinematic LUT"
                       ? "contrast(1.2) saturate(1.2) brightness(0.95)"
-                      : activeClip.videoFx === "Vibrant HDR"
+                      : playbackClip.videoFx === "Vibrant HDR"
                       ? "saturate(1.45) contrast(1.1) brightness(1.05)"
-                      : activeClip.videoFx === "Film Grain"
+                      : playbackClip.videoFx === "Film Grain"
                       ? "contrast(1.1) sepia(0.15)"
-                      : activeClip.videoFx === "Vignette Blur"
+                      : playbackClip.videoFx === "Vignette Blur"
                       ? "contrast(1.25)"
-                      : activeClip.videoFx === "Glow Accent"
+                      : playbackClip.videoFx === "Glow Accent"
                       ? "brightness(1.15) saturate(1.25)"
-                      : activeClip.videoFx === "Sharpen"
+                      : playbackClip.videoFx === "Sharpen"
                       ? "contrast(1.35)"
                       : "none",
                 }}
@@ -1796,7 +1601,7 @@ export default function Editor() {
                 onPlay={() => setIsPlaying(true)}
                 onEnded={() => {
                   const nextClip = [...timelineClips]
-                    .filter((clip) => clip.timelineStart > activeClip.timelineStart)
+                    .filter((clip) => clip.timelineStart > playbackClip.timelineStart)
                     .sort((a, b) => a.timelineStart - b.timelineStart)[0];
                   if (nextClip?.assetUrl) {
                     const nextVideo = previewVideoRef.current;
@@ -1867,7 +1672,10 @@ export default function Editor() {
 
         {/* Right Column: AI Agent Panel */}
         <AIAgentPanel
-          userEmail={user.email || "shubhamkumar92240@gmail.com"}
+          userEmail={user.email || user.name || "Local workspace"}
+          aiAvailable={aiHealth?.available ?? false}
+          assetCount={(assets ?? []).length}
+          timelineDuration={timelineContentEnd(timelineClips)}
           onExecuteQuickAction={handleExecuteQuickAction}
           onSendMessage={handleAISendMessage}
           aiLoading={aiLoading}
@@ -1898,7 +1706,6 @@ export default function Editor() {
         onSplit={() => handleSplitAtPlayhead(selectedClips.length ? selectedClips : activeClip ? [activeClip] : [])}
         canDelete={selectedClipIds.length > 0}
         onDelete={() => handleDeleteClips(selectedClipIds)}
-        onAddMarker={() => toast.success("Marker added at playhead")}
         snapping={snapping}
         onToggleSnapping={() => setSnapping(!snapping)}
         currentTime={currentTime}
@@ -1910,7 +1717,7 @@ export default function Editor() {
       />
 
       {/* Bottom Multi-Track Timeline (Captions, Video 1, Audio 1, Audio 2) */}
-      <div className="h-72 bg-[#0c0c14] flex flex-col flex-shrink-0">
+      <div className="h-72 min-h-72 bg-[#0c0c14] flex flex-col flex-shrink-0">
         <MultiTrackTimeline
           clips={timelineClips}
           captions={captions}

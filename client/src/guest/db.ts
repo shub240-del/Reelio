@@ -123,6 +123,50 @@ export async function clearGuestData(): Promise<void> {
   });
 }
 
+/** Apply a complete guest timeline commit in one IndexedDB transaction. */
+export async function commitGuestClipBatch<T extends { id: number; projectId: number }>(
+  projectId: number,
+  input: {
+    creates: Array<Omit<T, "id" | "projectId"> & { id?: number }>;
+    updates: Array<{ id: number; patch: Partial<T> }>;
+    deletes: number[];
+  },
+): Promise<T[]> {
+  const db = await openGuestDb();
+  const transaction = db.transaction("clips", "readwrite");
+  const store = transaction.objectStore("clips");
+  const current = (await wrap(store.index("projectId").getAll(projectId))) as T[];
+  const byId = new Map(current.map((clip) => [clip.id, clip]));
+
+  const complete = new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("Timeline commit failed"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("Timeline commit was aborted"));
+  });
+
+  const requests: Promise<unknown>[] = [];
+  for (const id of input.deletes) {
+    if (!byId.has(id)) throw new Error("Timeline commit referenced an unknown clip");
+    requests.push(wrap(store.delete(id)));
+  }
+  for (const update of input.updates) {
+    const clip = byId.get(update.id);
+    if (!clip) throw new Error("Timeline commit referenced an unknown clip");
+    requests.push(wrap(store.put({ ...clip, ...update.patch, id: clip.id, projectId })));
+  }
+  for (const create of input.creates) {
+    const row = { ...create, projectId } as Record<string, unknown>;
+    const request = wrap(store.put(row as any)).then((key) => {
+      if (row.id === undefined && typeof key === "number") row.id = key;
+    });
+    requests.push(request);
+  }
+
+  await Promise.all(requests);
+  await complete;
+  return getAllBy<T>("clips", "projectId", projectId);
+}
+
 /* ────────────────────────── media blobs ────────────────────────── */
 
 const urlCache = new Map<string, string>();

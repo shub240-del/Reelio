@@ -40,7 +40,7 @@ export const aiEditRequestSchema = z.object({
       sourceStart: z.number().min(0),
       sortIndex: z.number().int().min(0),
     }),
-  ),
+  ).max(5000),
 
   /** Assets referenced by the clips (durations are required for validation). */
   assets: z.array(
@@ -54,7 +54,7 @@ export const aiEditRequestSchema = z.object({
       fps: z.number().min(0),
       hasAudio: z.boolean(),
     }),
-  ),
+  ).max(1000),
 
   /** Detected silence ranges (empty if none detected or silence detection skipped). */
   silenceRanges: z
@@ -67,7 +67,7 @@ export const aiEditRequestSchema = z.object({
     .array(
       z.object({
         id: z.number().int().optional(),
-        text: z.string(),
+        text: z.string().max(4000),
         start: z.number().min(0),
         end: z.number().min(0),
       }),
@@ -150,6 +150,9 @@ CRITICAL RULES:
 - clipId must be an integer that exists in the provided clip list.
 - For removeRanges and keepRanges, start must be < end and both >= 0.
 - For "summary", state clearly the exact timestamps affected and time saved.
+- Never infer words, captions, speakers, filler words, restart phrases, or scene boundaries when the corresponding timestamped evidence is empty.
+- Use addCaptions only by copying text and times from supplied transcript segments. If there is no transcript, return no caption operation.
+- If the requested edit requires evidence that is absent, return an empty operations array and explain the missing evidence in the summary.
 - Return ONLY the raw JSON object — no explanation text outside the JSON.`;
 }
 
@@ -231,15 +234,43 @@ export interface AIEditResult {
  * output fails schema validation.
  */
 export async function requestAIEdit(req: AIEditRequest): Promise<AIEditResult> {
-  const provider = getAIProvider();
+  const parsedReq = aiEditRequestSchema.parse(req);
+  const normalizedInstruction = parsedReq.instruction.toLowerCase();
+  const needsTranscript = /(caption|subtitle|filler|restart|repeated take|spoken|speech)/.test(
+    normalizedInstruction,
+  );
+  if (
+    needsTranscript &&
+    parsedReq.transcriptSegments.length === 0 &&
+    parsedReq.fillerWords.length === 0
+  ) {
+    return {
+      plan: editPlanSchema.parse({
+        summary: "No edit proposed because timestamped transcription evidence is not available.",
+        operations: [],
+      }),
+      model: "evidence-guard",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    };
+  }
+  if (/silence|dead air|pause/.test(normalizedInstruction) && parsedReq.silenceRanges.length === 0) {
+    return {
+      plan: editPlanSchema.parse({
+        summary: "No edit proposed because no decodable silent ranges were detected.",
+        operations: [],
+      }),
+      model: "evidence-guard",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    };
+  }
 
+  const provider = getAIProvider();
   if (!provider.isAvailable()) {
     throw new Error(
       "AI editing is not available: NVIDIA_API_KEY is not configured on this server.",
     );
   }
 
-  const parsedReq = aiEditRequestSchema.parse(req);
   const systemPrompt = buildSystemPrompt();
   const userPrompt = buildUserPrompt(parsedReq);
 
