@@ -3,6 +3,7 @@ import {
   ClipSnapshot,
   TimelineHistory,
   TimelineSnapshot,
+  TrackStatesSnapshot,
   diffSnapshots,
   planIsEmpty,
   snapshotClips,
@@ -13,6 +14,8 @@ export interface TimelineHistoryPorts {
   getClips: () => ClipSnapshot[];
   getSelection: () => number[];
   setSelection: (ids: number[]) => void;
+  getTrackStates?: () => TrackStatesSnapshot;
+  setTrackStates?: (states: TrackStatesSnapshot) => void;
   createClip: (clip: ClipSnapshot) => Promise<unknown>;
   updateClip: (patch: Partial<ClipSnapshot> & { id: number }) => Promise<unknown>;
   deleteClip: (id: number) => Promise<unknown>;
@@ -40,6 +43,7 @@ export function useTimelineHistory(ports: TimelineHistoryPorts) {
       label,
       clips: snapshotClips(portsRef.current.getClips()),
       selection: [...portsRef.current.getSelection()],
+      trackStates: portsRef.current.getTrackStates?.(),
     }),
     [],
   );
@@ -59,6 +63,7 @@ export function useTimelineHistory(ports: TimelineHistoryPorts) {
       const p = portsRef.current;
       const plan = diffSnapshots(snapshotClips(p.getClips()), target.clips);
       if (planIsEmpty(plan)) {
+        if (target.trackStates) p.setTrackStates?.(target.trackStates);
         p.setSelection(target.selection);
         return;
       }
@@ -68,6 +73,7 @@ export function useTimelineHistory(ports: TimelineHistoryPorts) {
         for (const patch of plan.update) await p.updateClip(patch);
         for (const clip of plan.create) await p.createClip(clip);
         await p.refetch();
+        if (target.trackStates) p.setTrackStates?.(target.trackStates);
         p.setSelection(target.selection);
       } finally {
         applying.current = false;
