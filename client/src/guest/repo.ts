@@ -69,6 +69,16 @@ export interface GuestClip {
   locked: boolean;
   visible: boolean;
   muted: boolean;
+  zIndex: number;
+  volume: number;
+  trackVolume: number;
+  positionX: number;
+  positionY: number;
+  scale: number;
+  cropLeft: number;
+  cropTop: number;
+  cropRight: number;
+  cropBottom: number;
   videoFx?: string | null;
   transition?: string | null;
   createdAt: Date;
@@ -343,6 +353,16 @@ async function clipCreate(input: {
   locked?: boolean;
   visible?: boolean;
   muted?: boolean;
+  zIndex?: number;
+  volume?: number;
+  trackVolume?: number;
+  positionX?: number;
+  positionY?: number;
+  scale?: number;
+  cropLeft?: number;
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
   videoFx?: string | null;
   transition?: string | null;
 }): Promise<GuestClip> {
@@ -359,6 +379,16 @@ async function clipCreate(input: {
     locked: input.locked ?? false,
     visible: input.visible ?? true,
     muted: input.muted ?? false,
+    zIndex: input.zIndex ?? 0,
+    volume: input.volume ?? 1,
+    trackVolume: input.trackVolume ?? 1,
+    positionX: input.positionX ?? 0,
+    positionY: input.positionY ?? 0,
+    scale: input.scale ?? 1,
+    cropLeft: input.cropLeft ?? 0,
+    cropTop: input.cropTop ?? 0,
+    cropRight: input.cropRight ?? 0,
+    cropBottom: input.cropBottom ?? 0,
     videoFx: input.videoFx ?? null,
     transition: input.transition ?? null,
     createdAt: now(),
@@ -377,6 +407,16 @@ async function clipUpdate(input: {
   locked?: boolean;
   visible?: boolean;
   muted?: boolean;
+  zIndex?: number;
+  volume?: number;
+  trackVolume?: number;
+  positionX?: number;
+  positionY?: number;
+  scale?: number;
+  cropLeft?: number;
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
   trackId?: number;
   videoFx?: string | null;
   transition?: string | null;
@@ -390,6 +430,16 @@ async function clipUpdate(input: {
     "locked",
     "visible",
     "muted",
+    "zIndex",
+    "volume",
+    "trackVolume",
+    "positionX",
+    "positionY",
+    "scale",
+    "cropLeft",
+    "cropTop",
+    "cropRight",
+    "cropBottom",
     "trackId",
     "videoFx",
     "transition",
@@ -421,6 +471,16 @@ function toTimelineClip(row: GuestClip): TimelineClip {
     locked: row.locked,
     visible: row.visible,
     muted: row.muted,
+    zIndex: row.zIndex ?? 0,
+    volume: row.volume ?? 1,
+    trackVolume: row.trackVolume ?? 1,
+    positionX: row.positionX ?? 0,
+    positionY: row.positionY ?? 0,
+    scale: row.scale ?? 1,
+    cropLeft: row.cropLeft ?? 0,
+    cropTop: row.cropTop ?? 0,
+    cropRight: row.cropRight ?? 0,
+    cropBottom: row.cropBottom ?? 0,
   };
 }
 
@@ -499,6 +559,18 @@ async function clipSplit(input: {
     locked: row.locked,
     visible: row.visible,
     muted: row.muted,
+    zIndex: row.zIndex ?? 0,
+    volume: row.volume ?? 1,
+    trackVolume: row.trackVolume ?? 1,
+    positionX: row.positionX ?? 0,
+    positionY: row.positionY ?? 0,
+    scale: row.scale ?? 1,
+    cropLeft: row.cropLeft ?? 0,
+    cropTop: row.cropTop ?? 0,
+    cropRight: row.cropRight ?? 0,
+    cropBottom: row.cropBottom ?? 0,
+    videoFx: row.videoFx ?? null,
+    transition: row.transition ?? null,
     createdAt: now(),
   };
   await put("clips", rightRow);

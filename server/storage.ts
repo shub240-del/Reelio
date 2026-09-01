@@ -83,6 +83,56 @@ export async function storagePut(
   }
 }
 
+/** Upload a bounded local file without buffering the complete render in RAM. */
+export async function storagePutFile(
+  relKey: string,
+  filePath: string,
+  contentType: string,
+  maxBytes: number
+): Promise<{ key: string; url: string }> {
+  const stats = await fs.promises.stat(filePath);
+  if (!stats.isFile() || stats.size <= 0)
+    throw new Error("The generated media file is empty.");
+  if (stats.size > maxBytes)
+    throw new Error("The generated media file exceeds the storage limit.");
+
+  const key = appendHashSuffix(normalizeKey(relKey));
+  const forgeUrl = ENV.forgeApiUrl;
+  const forgeKey = ENV.forgeApiKey;
+  if (forgeUrl && forgeKey) {
+    const presignUrl = new URL(
+      "v1/storage/presign/put",
+      forgeUrl.replace(/\/+$/, "") + "/"
+    );
+    presignUrl.searchParams.set("path", key);
+    const presignResp = await fetch(presignUrl, {
+      headers: { Authorization: `Bearer ${forgeKey}` },
+    });
+    if (!presignResp.ok)
+      throw new Error(`Storage presign failed (${presignResp.status}).`);
+    const { url } = (await presignResp.json()) as { url?: string };
+    if (!url) throw new Error("Forge returned an empty presign URL.");
+    const uploadResp = await fetch(url, {
+      method: "PUT",
+      headers: {
+        "Content-Type": contentType,
+        "Content-Length": String(stats.size),
+      },
+      body: fs.createReadStream(filePath),
+      duplex: "half",
+    } as unknown as RequestInit & { duplex: "half" });
+    if (!uploadResp.ok)
+      throw new Error(`Storage upload failed (${uploadResp.status}).`);
+    return { key, url: `/manus-storage/${key}` };
+  }
+
+  const uploadsDir = path.resolve(process.cwd(), ".reelio", "uploads");
+  await fs.promises.mkdir(uploadsDir, { recursive: true });
+  const destination = path.join(uploadsDir, path.basename(key));
+  await fs.promises.copyFile(filePath, destination);
+  return { key, url: `/uploads/${path.basename(key)}` };
+}
+
 export async function storageGet(
   relKey: string
 ): Promise<{ key: string; url: string }> {

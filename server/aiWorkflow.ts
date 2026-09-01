@@ -71,6 +71,16 @@ function canonicalClips(
     locked: clip.locked,
     visible: clip.visible,
     muted: clip.muted,
+    zIndex: clip.zIndex ?? 0,
+    volume: clip.volume ?? 1,
+    trackVolume: clip.trackVolume ?? 1,
+    positionX: clip.positionX ?? 0,
+    positionY: clip.positionY ?? 0,
+    scale: clip.scale ?? 1,
+    cropLeft: clip.cropLeft ?? 0,
+    cropTop: clip.cropTop ?? 0,
+    cropRight: clip.cropRight ?? 0,
+    cropBottom: clip.cropBottom ?? 0,
     videoFx: clip.videoFx ?? null,
     transition: clip.transition ?? null,
   }));
@@ -200,6 +210,100 @@ export async function proposeAIEdit(
   }
 }
 
+/**
+ * Turn timestamped, provider-derived evidence into the same durable review
+ * workflow used by ordinary AI edits. This function deliberately accepts only
+ * canonical timeline ranges; the caller remains responsible for mapping owned
+ * asset timestamps onto the current timeline.
+ */
+export async function proposeEvidenceRangeRemoval(
+  input: {
+    requestId: string;
+    projectId: number;
+    evidenceId: string;
+    provider: string;
+    ranges: Array<{ start: number; end: number }>;
+    observations: string[];
+  },
+  userId: number
+): Promise<AIProposalView> {
+  const instruction = `remove-transcript-fillers:${input.evidenceId}:${input.ranges
+    .map(range => `${range.start.toFixed(6)}-${range.end.toFixed(6)}`)
+    .join(",")}`;
+  const instructionHash = hashInstruction(instruction);
+  const existing = await getAIEditProposalByRequest(userId, input.requestId);
+  if (existing) {
+    if (
+      existing.instructionHash !== instructionHash ||
+      existing.projectId !== input.projectId
+    ) {
+      throw new Error(
+        "This request ID was already used for different evidence."
+      );
+    }
+    return parseRow(existing as AIEditProposalRow);
+  }
+
+  const project = await getProject(input.projectId, userId);
+  if (!project) throw new Error("Project not found or not owned by this user.");
+  const [clipRows, assetRows] = await Promise.all([
+    getProjectClips(input.projectId),
+    getProjectAssets(input.projectId),
+  ]);
+  const clips = canonicalClips(clipRows);
+  const assets = canonicalAssets(assetRows);
+  const plan = editPlanSchema.parse({
+    summary: `Review removal of ${input.observations.length} timestamped filler occurrence${input.observations.length === 1 ? "" : "s"}.`,
+    operations: [
+      {
+        type: "removeRanges",
+        ranges: input.ranges,
+        reason: "Timestamped filler words from the selected transcript",
+      },
+    ],
+  });
+  validatePlanForTimeline(plan, {
+    instruction,
+    clips,
+    assets,
+    playhead: 0,
+    selectedClipIds: [],
+    silenceRanges: [],
+  });
+  const provenance: StoredAIProvenance = {
+    source: "provider-transcript-evidence",
+    provider: input.provider,
+    model: null,
+    observations: input.observations,
+    inferences: [
+      "Removing each mapped timeline range also ripples synchronized tracks.",
+    ],
+    unsupported: [],
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  };
+  try {
+    const row = await createAIEditProposal({
+      id: randomUUID(),
+      requestId: input.requestId,
+      projectId: input.projectId,
+      userId,
+      instructionHash,
+      baseRevision: createTimelineRevision(clips, assets),
+      planJson: JSON.stringify(plan),
+      provenanceJson: JSON.stringify(provenance),
+      provider: input.provider,
+      status: "pending",
+    });
+    if (!row) throw new Error("The filler proposal could not be persisted.");
+    return parseRow(row as AIEditProposalRow);
+  } catch (error) {
+    const raced = await getAIEditProposalByRequest(userId, input.requestId);
+    if (raced && raced.instructionHash === instructionHash)
+      return parseRow(raced as AIEditProposalRow);
+    throw error;
+  }
+}
+
 export function cancelRunningAIRequest(
   userId: number,
   requestId: string
@@ -309,6 +413,16 @@ export async function applyAIProposal(
         locked: clip.locked,
         visible: clip.visible,
         muted: clip.muted,
+        zIndex: clip.zIndex ?? 0,
+        volume: clip.volume ?? 1,
+        trackVolume: clip.trackVolume ?? 1,
+        positionX: clip.positionX ?? 0,
+        positionY: clip.positionY ?? 0,
+        scale: clip.scale ?? 1,
+        cropLeft: clip.cropLeft ?? 0,
+        cropTop: clip.cropTop ?? 0,
+        cropRight: clip.cropRight ?? 0,
+        cropBottom: clip.cropBottom ?? 0,
         videoFx: clip.videoFx ?? null,
         transition: clip.transition ?? null,
       }));
@@ -332,6 +446,16 @@ export async function applyAIProposal(
           locked: clip.locked,
           visible: clip.visible,
           muted: clip.muted,
+          zIndex: clip.zIndex ?? 0,
+          volume: clip.volume ?? 1,
+          trackVolume: clip.trackVolume ?? 1,
+          positionX: clip.positionX ?? 0,
+          positionY: clip.positionY ?? 0,
+          scale: clip.scale ?? 1,
+          cropLeft: clip.cropLeft ?? 0,
+          cropTop: clip.cropTop ?? 0,
+          cropRight: clip.cropRight ?? 0,
+          cropBottom: clip.cropBottom ?? 0,
           videoFx: clip.videoFx ?? null,
           transition: clip.transition ?? null,
         },

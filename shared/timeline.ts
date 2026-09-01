@@ -36,6 +36,16 @@ export interface TimelineClip {
   locked: boolean;
   visible: boolean;
   muted: boolean;
+  zIndex?: number;
+  volume?: number;
+  trackVolume?: number;
+  positionX?: number;
+  positionY?: number;
+  scale?: number;
+  cropLeft?: number;
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
   /** Persisted visual effect. Only values from the shared allowlist are accepted. */
   videoFx?: string | null;
   transition?: string | null;

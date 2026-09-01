@@ -12,6 +12,8 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { assertServerConfiguration } from "./env";
 import { getReadinessStatus } from "./systemRouter";
+import { recoverServerExports } from "../renderExport";
+import { recoverMediaAnalyses } from "../mediaAnalysis";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -83,6 +85,17 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
+    void Promise.all([recoverServerExports(), recoverMediaAnalyses()]).catch(
+      error => {
+        console.error(
+          JSON.stringify({
+            level: "error",
+            event: "job_recovery_failed",
+            kind: error instanceof Error ? error.name : "UnknownError",
+          })
+        );
+      }
+    );
   });
 }
 

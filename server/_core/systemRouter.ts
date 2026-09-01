@@ -5,11 +5,14 @@ import { ENV } from "./env";
 import { getAIProvider } from "./nvidia";
 import { checkDatabaseConnection } from "../db";
 import { checkFfmpegAvailable } from "../renderExport";
+import { checkCoordinationConnection } from "../coordination";
 
 export async function getReadinessStatus() {
   const checks = {
     databaseConfigured: Boolean(ENV.databaseUrl),
     databaseReachable: false,
+    coordinationConfigured: Boolean(ENV.redisUrl),
+    coordinationReachable: false,
     oauthConfigured: Boolean(
       ENV.appId && ENV.oAuthServerUrl && ENV.cookieSecret.length >= 32
     ),
@@ -19,6 +22,9 @@ export async function getReadinessStatus() {
   };
   checks.databaseReachable = checks.databaseConfigured
     ? await checkDatabaseConnection()
+    : false;
+  checks.coordinationReachable = checks.coordinationConfigured
+    ? await checkCoordinationConnection()
     : false;
   checks.ffmpegAvailable = await checkFfmpegAvailable();
   return {

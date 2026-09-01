@@ -4,9 +4,11 @@ import type { TrpcContext } from "./_core/context";
 import {
   createAsset,
   createClip,
+  createMediaAnalysis,
   createProject,
   getProjectClips,
   resetStore,
+  updateMediaAnalysis,
   updateClip,
 } from "./__mocks__/db";
 import { resetRateLimitsForTests } from "./rateLimit";
@@ -61,9 +63,9 @@ async function fixture() {
 }
 
 describe("persisted AI proposal workflow", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetStore();
-    resetRateLimitsForTests();
+    await resetRateLimitsForTests();
     delete process.env.NVIDIA_API_KEY;
   });
 
@@ -229,5 +231,102 @@ describe("persisted AI proposal workflow", () => {
     expect(result.status).toBe("no_action");
     expect(result.plan.operations).toEqual([]);
     expect(result.provenance.source).toBe("provider-unavailable");
+  });
+
+  it("maps exact filler timestamps into a durable, reviewable and undoable proposal", async () => {
+    const { project, asset } = await fixture();
+    const analysis = await createMediaAnalysis({
+      id: "20000000-0000-4000-8000-000000000001",
+      requestId: "20000000-0000-4000-8000-000000000002",
+      projectId: project.id,
+      assetId: asset.id,
+      userId: 1,
+      kind: "transcription",
+      status: "done",
+      progress: 100,
+      attempt: 1,
+      provider: "test-timestamp-provider",
+      resultJson: null,
+      errorMessage: null,
+    });
+    await updateMediaAnalysis(analysis.id, 1, {
+      resultJson: JSON.stringify({
+        provider: "test-timestamp-provider",
+        language: "en",
+        text: "Well, um, continue.",
+        segments: [
+          {
+            text: "Well, um, continue.",
+            start: 0,
+            end: 3,
+            words: [
+              { word: "Well", start: 0, end: 0.4 },
+              { word: "um", start: 1, end: 1.25 },
+              { word: "continue", start: 2, end: 3 },
+            ],
+          },
+        ],
+        words: [
+          { word: "Well", start: 0, end: 0.4 },
+          { word: "um", start: 1, end: 1.25 },
+          { word: "continue", start: 2, end: 3 },
+        ],
+        fillers: [{ text: "um", start: 1, end: 1.25 }],
+        captions: [{ text: "Well, um, continue.", startTime: 0, endTime: 3 }],
+      }),
+    });
+    const caller = appRouter.createCaller(context(1));
+    const proposal = await caller.analysis.proposeFillerRemoval({
+      requestId: "20000000-0000-4000-8000-000000000003",
+      analysisId: analysis.id,
+      occurrenceIndices: [0],
+    });
+
+    expect(proposal).toMatchObject({
+      status: "pending",
+      provenance: {
+        source: "provider-transcript-evidence",
+        provider: "test-timestamp-provider",
+      },
+      plan: {
+        operations: [
+          {
+            type: "removeRanges",
+            ranges: [{ start: 1, end: 1.25 }],
+          },
+        ],
+      },
+    });
+    expect((await getProjectClips(project.id))[0].duration).toBe(10);
+    await caller.ai.commit({ id: proposal.id, selectedOperationIndices: [0] });
+    expect(await getProjectClips(project.id)).toEqual([
+      expect.objectContaining({ sourceStart: 0, duration: 1 }),
+      expect.objectContaining({ sourceStart: 1.25, duration: 8.75 }),
+    ]);
+  });
+
+  it("does not disclose or propose from another user's transcript evidence", async () => {
+    const { project, asset } = await fixture();
+    const analysis = await createMediaAnalysis({
+      id: "20000000-0000-4000-8000-000000000004",
+      requestId: "20000000-0000-4000-8000-000000000005",
+      projectId: project.id,
+      assetId: asset.id,
+      userId: 1,
+      kind: "transcription",
+      status: "done",
+      progress: 100,
+      attempt: 1,
+      provider: "test-provider",
+      resultJson: "{}",
+      errorMessage: null,
+    });
+    await expect(
+      appRouter.createCaller(context(2)).analysis.proposeFillerRemoval({
+        requestId: "20000000-0000-4000-8000-000000000006",
+        analysisId: analysis.id,
+        occurrenceIndices: [0],
+      })
+    ).rejects.toThrow("Analysis not found");
   });
 });

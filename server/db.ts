@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   assets,
@@ -7,6 +7,7 @@ import {
   clips,
   exports as exportsTable,
   markers,
+  mediaAnalyses,
   projects,
   users,
   InsertAsset,
@@ -14,6 +15,7 @@ import {
   InsertClip,
   InsertExport,
   InsertMarker,
+  InsertMediaAnalysis,
   InsertProject,
   InsertUser,
   InsertAIEditProposal,
@@ -62,6 +64,7 @@ const memMarkers: any[] = [];
 const memCaptions: any[] = [];
 const memExports: any[] = [];
 const memAIEditProposals: any[] = [];
+const memMediaAnalyses: any[] = [];
 
 let nextProjectId = 1;
 let nextAssetId = 1;
@@ -226,6 +229,79 @@ export async function duplicateProject(
 ) {
   const source = await getProject(id, userId);
   if (!source) return undefined;
+  const db = await getDb();
+  if (db) {
+    return db.transaction(async tx => {
+      const insertedProject = await tx.insert(projects).values({
+        userId,
+        name: name ?? `${source.name} Copy`,
+        description: source.description,
+        status: "draft",
+      });
+      const copyId = Number(insertedProject[0]?.insertId ?? 0);
+      if (!copyId) throw new Error("Could not create project copy.");
+      const assetIdMap = new Map<number, number>();
+      const sourceAssets = await tx
+        .select()
+        .from(assets)
+        .where(eq(assets.projectId, id));
+      for (const asset of sourceAssets) {
+        const { id: sourceAssetId, createdAt: _createdAt, ...values } = asset;
+        const insertedAsset = await tx.insert(assets).values({
+          ...values,
+          projectId: copyId,
+          userId,
+        });
+        const copiedAssetId = Number(insertedAsset[0]?.insertId ?? 0);
+        if (!copiedAssetId) throw new Error("Could not copy project media.");
+        assetIdMap.set(sourceAssetId, copiedAssetId);
+      }
+      const sourceClips = await tx
+        .select()
+        .from(clips)
+        .where(eq(clips.projectId, id));
+      for (const clip of sourceClips) {
+        const { id: _clipId, createdAt: _createdAt, ...values } = clip;
+        const copiedAssetId = assetIdMap.get(clip.assetId);
+        if (!copiedAssetId)
+          throw new Error("A copied clip lost its media reference.");
+        await tx.insert(clips).values({
+          ...values,
+          projectId: copyId,
+          assetId: copiedAssetId,
+        });
+      }
+      const sourceMarkers = await tx
+        .select()
+        .from(markers)
+        .where(eq(markers.projectId, id));
+      for (const marker of sourceMarkers) {
+        const { id: _markerId, createdAt: _createdAt, ...values } = marker;
+        await tx.insert(markers).values({ ...values, projectId: copyId });
+      }
+      const sourceCaptions = await tx
+        .select()
+        .from(captions)
+        .where(eq(captions.projectId, id));
+      for (const caption of sourceCaptions) {
+        const { id: _captionId, createdAt: _createdAt, ...values } = caption;
+        const copiedAssetId = assetIdMap.get(caption.assetId);
+        if (!copiedAssetId)
+          throw new Error("A copied caption lost its media reference.");
+        await tx.insert(captions).values({
+          ...values,
+          projectId: copyId,
+          assetId: copiedAssetId,
+        });
+      }
+      const copiedRows = await tx
+        .select()
+        .from(projects)
+        .where(eq(projects.id, copyId))
+        .limit(1);
+      return copiedRows[0];
+    });
+  }
   const copy = await createProject(
     userId,
     name ?? `${source.name} Copy`,
@@ -287,6 +363,7 @@ export async function deleteProject(id: number, userId: number) {
       memCaptions,
       memExports,
       memAIEditProposals,
+      memMediaAnalyses,
       memAssets,
     ]) {
       for (let rowIndex = rows.length - 1; rowIndex >= 0; rowIndex -= 1) {
@@ -302,12 +379,8 @@ export async function deleteProject(id: number, userId: number) {
     .where(and(eq(projects.id, id), eq(projects.userId, userId)))
     .limit(1);
   if (!owned[0]) return;
-  await db.delete(clips).where(eq(clips.projectId, id));
-  await db.delete(markers).where(eq(markers.projectId, id));
-  await db.delete(captions).where(eq(captions.projectId, id));
-  await db.delete(exportsTable).where(eq(exportsTable.projectId, id));
-  await db.delete(aiEditProposals).where(eq(aiEditProposals.projectId, id));
-  await db.delete(assets).where(eq(assets.projectId, id));
+  // The schema owns child cleanup through ON DELETE CASCADE, keeping project
+  // deletion atomic even if the application process terminates mid-request.
   await db
     .delete(projects)
     .where(and(eq(projects.id, id), eq(projects.userId, userId)));
@@ -405,8 +478,7 @@ export async function deleteAsset(id: number, userId: number) {
     .limit(1);
   if (!project[0] || project[0].userId !== userId)
     throw new Error("Unauthorized: asset does not belong to this user");
-  await db.delete(clips).where(eq(clips.assetId, id));
-  await db.delete(captions).where(eq(captions.assetId, id));
+  // Clips, captions and analysis rows cascade from the owned asset.
   await db.delete(assets).where(eq(assets.id, id));
 }
 
@@ -423,6 +495,16 @@ export async function createClip(data: InsertClip) {
       locked: data.locked ?? false,
       visible: data.visible ?? true,
       muted: data.muted ?? false,
+      zIndex: data.zIndex ?? 0,
+      volume: data.volume ?? 1,
+      trackVolume: data.trackVolume ?? 1,
+      positionX: data.positionX ?? 0,
+      positionY: data.positionY ?? 0,
+      scale: data.scale ?? 1,
+      cropLeft: data.cropLeft ?? 0,
+      cropTop: data.cropTop ?? 0,
+      cropRight: data.cropRight ?? 0,
+      cropBottom: data.cropBottom ?? 0,
       videoFx: data.videoFx ?? null,
       transition: data.transition ?? null,
       createdAt: new Date(),
@@ -467,6 +549,16 @@ export async function updateClip(id: number, updates: Partial<InsertClip>) {
     "locked",
     "visible",
     "muted",
+    "zIndex",
+    "volume",
+    "trackVolume",
+    "positionX",
+    "positionY",
+    "scale",
+    "cropLeft",
+    "cropTop",
+    "cropRight",
+    "cropBottom",
     "videoFx",
     "transition",
   ] as const) {
@@ -574,6 +666,16 @@ export async function batchCommitTimeline(
         "locked",
         "visible",
         "muted",
+        "zIndex",
+        "volume",
+        "trackVolume",
+        "positionX",
+        "positionY",
+        "scale",
+        "cropLeft",
+        "cropTop",
+        "cropRight",
+        "cropBottom",
         "videoFx",
         "transition",
       ] as const) {
@@ -699,6 +801,16 @@ export async function commitAIProposalTimeline(
         "locked",
         "visible",
         "muted",
+        "zIndex",
+        "volume",
+        "trackVolume",
+        "positionX",
+        "positionY",
+        "scale",
+        "cropLeft",
+        "cropTop",
+        "cropRight",
+        "cropBottom",
         "videoFx",
         "transition",
       ] as const) {
@@ -835,16 +947,50 @@ export async function getCaption(id: number) {
   return rows[0];
 }
 
+export async function updateCaption(
+  id: number,
+  updates: { text?: string; startTime?: number; endTime?: number }
+) {
+  const db = await getDb();
+  if (!db) {
+    const caption = memCaptions.find(row => row.id === id);
+    if (caption) Object.assign(caption, updates);
+    return;
+  }
+  await db.update(captions).set(updates).where(eq(captions.id, id));
+}
+
+export async function deleteCaption(id: number) {
+  const db = await getDb();
+  if (!db) {
+    const index = memCaptions.findIndex(row => row.id === id);
+    if (index >= 0) memCaptions.splice(index, 1);
+    return;
+  }
+  await db.delete(captions).where(eq(captions.id, id));
+}
+
 /* ─── Export helpers ─── */
 export async function createExport(data: InsertExport) {
   const db = await getDb();
   if (!db) {
+    const existing = memExports.find(
+      row => row.userId === data.userId && row.requestId === data.requestId
+    );
+    if (existing) return existing;
     const exp = { id: nextExportId++, ...data, createdAt: new Date() };
     memExports.push(exp);
     return exp;
   }
-  const result = await db.insert(exportsTable).values(data);
+  const result = await db
+    .insert(exportsTable)
+    .values(data)
+    .onDuplicateKeyUpdate({ set: { requestId: data.requestId } });
   const id = Number(result[0]?.insertId ?? 0);
+  if (!id) {
+    const existing = await getExportByRequest(data.userId, data.requestId);
+    if (existing) return existing;
+  }
   const rows = await db
     .select()
     .from(exportsTable)
@@ -863,6 +1009,27 @@ export async function getProjectExports(projectId: number) {
     .orderBy(desc(exportsTable.createdAt));
 }
 
+export async function getExportByRequest(userId: number, requestId: string) {
+  const db = await getDb();
+  if (!db) {
+    return memExports.find(
+      exportRow =>
+        exportRow.userId === userId && exportRow.requestId === requestId
+    );
+  }
+  const rows = await db
+    .select()
+    .from(exportsTable)
+    .where(
+      and(
+        eq(exportsTable.userId, userId),
+        eq(exportsTable.requestId, requestId)
+      )
+    )
+    .limit(1);
+  return rows[0];
+}
+
 export async function getExport(id: number) {
   const db = await getDb();
   if (!db) return memExports.find(exportRow => exportRow.id === id);
@@ -874,15 +1041,36 @@ export async function getExport(id: number) {
   return rows[0];
 }
 
+export async function getRecoverableExports(limit = 50) {
+  const db = await getDb();
+  if (!db) {
+    return memExports
+      .filter(row => row.status === "queued" || row.status === "processing")
+      .slice(0, limit);
+  }
+  return db
+    .select()
+    .from(exportsTable)
+    .where(
+      or(
+        eq(exportsTable.status, "queued"),
+        eq(exportsTable.status, "processing")
+      )
+    )
+    .orderBy(exportsTable.createdAt)
+    .limit(limit);
+}
+
 export async function updateExport(
   id: number,
   updates: {
-    status?: "processing" | "done" | "failed" | "cancelled";
+    status?: "queued" | "processing" | "done" | "failed" | "cancelled";
     errorMessage?: string | null;
     progress?: number;
     storageKey?: string;
     url?: string;
     duration?: number;
+    attempt?: number;
   }
 ) {
   const db = await getDb();
@@ -900,7 +1088,140 @@ export async function updateExport(
     updateSet.storageKey = updates.storageKey;
   if (updates.url !== undefined) updateSet.url = updates.url;
   if (updates.duration !== undefined) updateSet.duration = updates.duration;
+  if (updates.attempt !== undefined) updateSet.attempt = updates.attempt;
   await db.update(exportsTable).set(updateSet).where(eq(exportsTable.id, id));
+}
+
+/* ─── Durable media-analysis helpers ─── */
+export async function createMediaAnalysis(data: InsertMediaAnalysis) {
+  const db = await getDb();
+  if (!db) {
+    const existing = memMediaAnalyses.find(
+      row => row.userId === data.userId && row.requestId === data.requestId
+    );
+    if (existing) return existing;
+    const row = {
+      ...data,
+      status: data.status ?? "queued",
+      progress: data.progress ?? 0,
+      attempt: data.attempt ?? 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    memMediaAnalyses.push(row);
+    return row;
+  }
+  await db
+    .insert(mediaAnalyses)
+    .values(data)
+    .onDuplicateKeyUpdate({ set: { requestId: data.requestId } });
+  return getMediaAnalysisByRequest(data.userId, data.requestId);
+}
+
+export async function getMediaAnalysis(id: string, userId: number) {
+  const db = await getDb();
+  if (!db) {
+    return memMediaAnalyses.find(row => row.id === id && row.userId === userId);
+  }
+  const rows = await db
+    .select()
+    .from(mediaAnalyses)
+    .where(and(eq(mediaAnalyses.id, id), eq(mediaAnalyses.userId, userId)))
+    .limit(1);
+  return rows[0];
+}
+
+export async function getMediaAnalysisByRequest(
+  userId: number,
+  requestId: string
+) {
+  const db = await getDb();
+  if (!db) {
+    return memMediaAnalyses.find(
+      row => row.userId === userId && row.requestId === requestId
+    );
+  }
+  const rows = await db
+    .select()
+    .from(mediaAnalyses)
+    .where(
+      and(
+        eq(mediaAnalyses.userId, userId),
+        eq(mediaAnalyses.requestId, requestId)
+      )
+    )
+    .limit(1);
+  return rows[0];
+}
+
+export async function getProjectMediaAnalyses(
+  projectId: number,
+  userId: number
+) {
+  const db = await getDb();
+  if (!db) {
+    return memMediaAnalyses
+      .filter(row => row.projectId === projectId && row.userId === userId)
+      .sort((a, b) => +b.createdAt - +a.createdAt);
+  }
+  return db
+    .select()
+    .from(mediaAnalyses)
+    .where(
+      and(
+        eq(mediaAnalyses.projectId, projectId),
+        eq(mediaAnalyses.userId, userId)
+      )
+    )
+    .orderBy(desc(mediaAnalyses.createdAt));
+}
+
+export async function getRecoverableMediaAnalyses(limit = 50) {
+  const db = await getDb();
+  if (!db) {
+    return memMediaAnalyses
+      .filter(row => row.status === "queued" || row.status === "processing")
+      .slice(0, limit);
+  }
+  return db
+    .select()
+    .from(mediaAnalyses)
+    .where(
+      or(
+        eq(mediaAnalyses.status, "queued"),
+        eq(mediaAnalyses.status, "processing")
+      )
+    )
+    .orderBy(mediaAnalyses.createdAt)
+    .limit(limit);
+}
+
+export async function updateMediaAnalysis(
+  id: string,
+  userId: number,
+  updates: {
+    status?: "queued" | "processing" | "done" | "failed" | "cancelled";
+    progress?: number;
+    attempt?: number;
+    resultJson?: string | null;
+    errorMessage?: string | null;
+  }
+) {
+  const db = await getDb();
+  if (!db) {
+    const row = memMediaAnalyses.find(
+      candidate => candidate.id === id && candidate.userId === userId
+    );
+    if (row) {
+      Object.assign(row, updates);
+      row.updatedAt = new Date();
+    }
+    return;
+  }
+  await db
+    .update(mediaAnalyses)
+    .set(updates)
+    .where(and(eq(mediaAnalyses.id, id), eq(mediaAnalyses.userId, userId)));
 }
 
 /* ─── AI proposal helpers ─── */

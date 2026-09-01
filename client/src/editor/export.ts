@@ -20,6 +20,11 @@
  */
 
 import type { CaptionCue } from "../../../shared/editOps";
+import fixWebmDuration from "fix-webm-duration";
+
+const MAX_BROWSER_EXPORT_DURATION_SECONDS = 2 * 60 * 60;
+const MAX_BROWSER_EXPORT_CLIPS = 100;
+const MAX_BROWSER_EXPORT_BYTES = 500 * 1024 * 1024;
 
 export interface ExportClip {
   id: number;
@@ -34,6 +39,16 @@ export interface ExportClip {
   sortIndex: number;
   visible: boolean;
   muted: boolean;
+  zIndex?: number;
+  volume?: number;
+  trackVolume?: number;
+  positionX?: number;
+  positionY?: number;
+  scale?: number;
+  cropLeft?: number;
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
   videoFx?: string | null;
 }
 
@@ -127,6 +142,10 @@ export class ExportEngine {
     const end = timelineContentEnd(videoClips);
 
     if (end <= 0) throw new Error("Timeline has zero duration");
+    if (end > MAX_BROWSER_EXPORT_DURATION_SECONDS)
+      throw new Error("Browser export exceeds the two-hour limit");
+    if (this.clips.length > MAX_BROWSER_EXPORT_CLIPS)
+      throw new Error("Browser export exceeds the 100-clip limit");
 
     // ── Canvas & 2D Context ───────────────────────────────────────────────
     const canvas = document.createElement("canvas");
@@ -162,6 +181,10 @@ export class ExportEngine {
           el.crossOrigin = "anonymous";
           el.src = clip.assetUrl;
           el.preload = "auto";
+          el.volume = Math.max(
+            0,
+            Math.min(1, (clip.volume ?? 1) * (clip.trackVolume ?? 1)),
+          );
           await new Promise<void>((resolve) => {
             el.addEventListener("loadedmetadata", () => resolve(), { once: true });
             el.addEventListener("error", () => resolve(), { once: true }); // non-fatal
@@ -186,9 +209,18 @@ export class ExportEngine {
       ? "video/webm;codecs=vp9"
       : "video/webm";
     const chunks: Blob[] = [];
+    let recordedBytes = 0;
+    let resourceError: Error | null = null;
     const recorder = new MediaRecorder(recordStream, { mimeType });
     recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
+      if (e.data.size <= 0 || resourceError) return;
+      recordedBytes += e.data.size;
+      if (recordedBytes > MAX_BROWSER_EXPORT_BYTES) {
+        resourceError = new Error("Browser export exceeds the 500 MB memory limit");
+        if (recorder.state !== "inactive") recorder.stop();
+        return;
+      }
+      chunks.push(e.data);
     };
     const stopped = new Promise<Blob>((resolve) => {
       recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType }));
@@ -236,18 +268,23 @@ export class ExportEngine {
     const renderStartedAt = performance.now();
     let frameIndex = 0;
 
-    for (let time = 0; time <= end; time += 1 / FPS) {
+    for (let time = 0; time <= end && !resourceError; time += 1 / FPS) {
       this.onProgress(Math.min(99, (time / end) * 100));
 
-      // Find the active video clip at this timestamp
-      const clip = videoClips.find(
-        (c) => time >= c.timelineStart && time < c.timelineStart + c.duration,
-      );
+      const activeVideoClips = videoClips
+        .filter((c) => time >= c.timelineStart && time < c.timelineStart + c.duration)
+        .sort(
+          (a, b) =>
+            (a.zIndex ?? a.trackId) - (b.zIndex ?? b.trackId) ||
+            a.trackId - b.trackId ||
+            a.sortIndex - b.sortIndex ||
+            a.id - b.id,
+        );
 
       ctx.fillStyle = "#000000";
       ctx.fillRect(0, 0, width, height);
 
-      if (clip) {
+      for (const clip of activeVideoClips) {
         const asset = this.assets.get(clip.assetId);
         if (asset?.url) {
           // Switch source if needed
@@ -270,7 +307,22 @@ export class ExportEngine {
           // Apply VideoFX via CanvasRenderingContext2D filter
           const fxFilter = clip.videoFx ? (FX_FILTER[clip.videoFx] ?? "none") : "none";
           ctx.filter = fxFilter;
-          ctx.drawImage(source, 0, 0, width, height);
+          const cropLeft = Math.max(0, Math.min(0.9, clip.cropLeft ?? 0));
+          const cropTop = Math.max(0, Math.min(0.9, clip.cropTop ?? 0));
+          const cropRight = Math.max(0, Math.min(0.9, clip.cropRight ?? 0));
+          const cropBottom = Math.max(0, Math.min(0.9, clip.cropBottom ?? 0));
+          const sourceWidth = source.videoWidth || asset.width || width;
+          const sourceHeight = source.videoHeight || asset.height || height;
+          const sx = sourceWidth * cropLeft;
+          const sy = sourceHeight * cropTop;
+          const sw = sourceWidth * Math.max(0.05, 1 - cropLeft - cropRight);
+          const sh = sourceHeight * Math.max(0.05, 1 - cropTop - cropBottom);
+          const fit = Math.min(width / sw, height / sh) * Math.max(0.1, Math.min(4, clip.scale ?? 1));
+          const dw = sw * fit;
+          const dh = sh * fit;
+          const dx = Math.max(0, Math.min(width - dw, (width - dw) / 2 + (clip.positionX ?? 0) * width / 2));
+          const dy = Math.max(0, Math.min(height - dh, (height - dh) / 2 + (clip.positionY ?? 0) * height / 2));
+          ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
           ctx.filter = "none";
         }
       }
@@ -316,7 +368,7 @@ export class ExportEngine {
       }
     }
 
-    recorder.stop();
+    if (recorder.state !== "inactive") recorder.stop();
     const blob = await stopped;
 
     // ── Cleanup ───────────────────────────────────────────────────────────
@@ -331,8 +383,15 @@ export class ExportEngine {
     canvasStream.getTracks().forEach((t) => t.stop());
     recordStream.getTracks().forEach((t) => t.stop());
 
+    if (resourceError) throw resourceError;
     if (blob.size === 0) throw new Error("Export produced an empty file. The browser may not support the required codecs.");
-    return blob;
+    // MediaRecorder commonly omits the EBML Duration element. The duration is
+    // derived from the validated canonical timeline above, never from an API or
+    // arbitrary form field. The bounded Blob is finalized before download.
+    const finalized = await fixWebmDuration(blob, end * 1000, { logger: false });
+    if (finalized.size > MAX_BROWSER_EXPORT_BYTES)
+      throw new Error("Finalized browser export exceeds the 500 MB limit");
+    return finalized;
   }
 }
 

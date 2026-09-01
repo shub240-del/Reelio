@@ -58,6 +58,7 @@ export interface CanonicalAIContext {
 export type AIProposalSource =
   | "deterministic"
   | "browser-audio-evidence"
+  | "provider-transcript-evidence"
   | "nvidia-nim"
   | "evidence-guard"
   | "provider-unavailable";
@@ -96,6 +97,16 @@ export function createTimelineRevision(
         locked: clip.locked,
         visible: clip.visible,
         muted: clip.muted,
+        zIndex: clip.zIndex ?? 0,
+        volume: clip.volume ?? 1,
+        trackVolume: clip.trackVolume ?? 1,
+        positionX: clip.positionX ?? 0,
+        positionY: clip.positionY ?? 0,
+        scale: clip.scale ?? 1,
+        cropLeft: clip.cropLeft ?? 0,
+        cropTop: clip.cropTop ?? 0,
+        cropRight: clip.cropRight ?? 0,
+        cropBottom: clip.cropBottom ?? 0,
         videoFx: clip.videoFx ?? null,
       })),
     assets: [...assets]

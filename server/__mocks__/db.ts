@@ -26,6 +26,8 @@ import type {
   Project,
   AIEditProposalRow,
   InsertAIEditProposal,
+  MediaAnalysis,
+  InsertMediaAnalysis,
 } from "../../drizzle/schema";
 
 /* ─── In-memory stores ─── */
@@ -42,6 +44,7 @@ const store = {
   captions: new Map<number, Caption>(),
   exports: new Map<number, ExportRow>(),
   aiEditProposals: new Map<string, AIEditProposalRow>(),
+  mediaAnalyses: new Map<string, MediaAnalysis>(),
 };
 
 /** Reset all in-memory tables between tests. Call from beforeEach/afterEach. */
@@ -287,6 +290,16 @@ export async function createClip(data: InsertClip): Promise<Clip> {
     locked: data.locked ?? false,
     visible: data.visible ?? true,
     muted: data.muted ?? false,
+    zIndex: data.zIndex ?? 0,
+    volume: data.volume ?? 1,
+    trackVolume: data.trackVolume ?? 1,
+    positionX: data.positionX ?? 0,
+    positionY: data.positionY ?? 0,
+    scale: data.scale ?? 1,
+    cropLeft: data.cropLeft ?? 0,
+    cropTop: data.cropTop ?? 0,
+    cropRight: data.cropRight ?? 0,
+    cropBottom: data.cropBottom ?? 0,
     videoFx: data.videoFx ?? null,
     transition: data.transition ?? null,
     createdAt: new Date(),
@@ -317,6 +330,16 @@ export async function updateClip(
     "locked",
     "visible",
     "muted",
+    "zIndex",
+    "volume",
+    "trackVolume",
+    "positionX",
+    "positionY",
+    "scale",
+    "cropLeft",
+    "cropTop",
+    "cropRight",
+    "cropBottom",
     "videoFx",
     "transition",
   ] as const;
@@ -374,6 +397,16 @@ export async function batchCommitTimeline(
       locked: cr.locked ?? false,
       visible: cr.visible ?? true,
       muted: cr.muted ?? false,
+      zIndex: cr.zIndex ?? 0,
+      volume: cr.volume ?? 1,
+      trackVolume: cr.trackVolume ?? 1,
+      positionX: cr.positionX ?? 0,
+      positionY: cr.positionY ?? 0,
+      scale: cr.scale ?? 1,
+      cropLeft: cr.cropLeft ?? 0,
+      cropTop: cr.cropTop ?? 0,
+      cropRight: cr.cropRight ?? 0,
+      cropBottom: cr.cropBottom ?? 0,
       videoFx: cr.videoFx ?? null,
       transition: cr.transition ?? null,
       createdAt: new Date(),
@@ -519,23 +552,39 @@ export async function getCaption(id: number): Promise<Caption | undefined> {
   return store.captions.get(id);
 }
 
+export async function updateCaption(
+  id: number,
+  updates: { text?: string; startTime?: number; endTime?: number }
+) {
+  const row = store.captions.get(id);
+  if (row) Object.assign(row, updates);
+}
+
+export async function deleteCaption(id: number) {
+  store.captions.delete(id);
+}
+
 /* ─── Export helpers ─── */
 
 export async function createExport(data: InsertExport): Promise<ExportRow> {
   const id = autoId();
   const row: ExportRow = {
     id,
+    requestId: data.requestId,
     projectId: data.projectId,
     userId: data.userId,
     storageKey: data.storageKey,
     url: data.url,
     resolution: data.resolution,
     format: (data.format ?? "mp4") as ExportRow["format"],
+    includeCaptions: data.includeCaptions ?? false,
     duration: data.duration,
-    status: (data.status ?? "processing") as ExportRow["status"],
+    status: (data.status ?? "queued") as ExportRow["status"],
     progress: data.progress ?? 0,
+    attempt: data.attempt ?? 0,
     errorMessage: data.errorMessage ?? null,
     createdAt: new Date(),
+    updatedAt: new Date(),
   };
   store.exports.set(id, row);
   return row;
@@ -553,15 +602,22 @@ export async function getExport(id: number): Promise<ExportRow | undefined> {
   return store.exports.get(id);
 }
 
+export async function getRecoverableExports(limit = 50) {
+  return [...store.exports.values()]
+    .filter(row => row.status === "queued" || row.status === "processing")
+    .slice(0, limit);
+}
+
 export async function updateExport(
   id: number,
   updates: {
-    status?: "processing" | "done" | "failed" | "cancelled";
+    status?: "queued" | "processing" | "done" | "failed" | "cancelled";
     errorMessage?: string | null;
     progress?: number;
     storageKey?: string;
     url?: string;
     duration?: number;
+    attempt?: number;
   }
 ): Promise<void> {
   const row = store.exports.get(id);
@@ -573,6 +629,82 @@ export async function updateExport(
   if (updates.storageKey !== undefined) row.storageKey = updates.storageKey;
   if (updates.url !== undefined) row.url = updates.url;
   if (updates.duration !== undefined) row.duration = updates.duration;
+  if (updates.attempt !== undefined) row.attempt = updates.attempt;
+  row.updatedAt = new Date();
+}
+
+/* ─── Media-analysis helpers ─── */
+export async function createMediaAnalysis(
+  data: InsertMediaAnalysis
+): Promise<MediaAnalysis> {
+  const existing = [...store.mediaAnalyses.values()].find(
+    row => row.userId === data.userId && row.requestId === data.requestId
+  );
+  if (existing) return existing;
+  const row: MediaAnalysis = {
+    id: data.id,
+    requestId: data.requestId,
+    projectId: data.projectId,
+    assetId: data.assetId,
+    userId: data.userId,
+    kind: data.kind,
+    status: data.status ?? "queued",
+    progress: data.progress ?? 0,
+    attempt: data.attempt ?? 0,
+    provider: data.provider,
+    resultJson: data.resultJson ?? null,
+    errorMessage: data.errorMessage ?? null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  store.mediaAnalyses.set(row.id, row);
+  return row;
+}
+
+export async function getMediaAnalysis(id: string, userId: number) {
+  const row = store.mediaAnalyses.get(id);
+  return row?.userId === userId ? row : undefined;
+}
+
+export async function getMediaAnalysisByRequest(
+  userId: number,
+  requestId: string
+) {
+  return [...store.mediaAnalyses.values()].find(
+    row => row.userId === userId && row.requestId === requestId
+  );
+}
+
+export async function getProjectMediaAnalyses(
+  projectId: number,
+  userId: number
+) {
+  return [...store.mediaAnalyses.values()].filter(
+    row => row.projectId === projectId && row.userId === userId
+  );
+}
+
+export async function getRecoverableMediaAnalyses(limit = 50) {
+  return [...store.mediaAnalyses.values()]
+    .filter(row => row.status === "queued" || row.status === "processing")
+    .slice(0, limit);
+}
+
+export async function updateMediaAnalysis(
+  id: string,
+  userId: number,
+  updates: Partial<
+    Pick<
+      MediaAnalysis,
+      "status" | "progress" | "attempt" | "resultJson" | "errorMessage"
+    >
+  >
+) {
+  const row = await getMediaAnalysis(id, userId);
+  if (row) {
+    Object.assign(row, updates);
+    row.updatedAt = new Date();
+  }
 }
 
 /* ─── AI proposal helpers ─── */

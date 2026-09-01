@@ -35,9 +35,9 @@ function context(userId: number): TrpcContext {
 }
 
 describe("server export router", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetStore();
-    resetRateLimitsForTests();
+    await resetRateLimitsForTests();
     renderMocks.start.mockReset();
     renderMocks.cancel.mockReset();
   });
@@ -48,17 +48,23 @@ describe("server export router", () => {
 
     const result = await appRouter.createCaller(context(1)).export.create({
       projectId: project.id,
+      requestId: "10000000-0000-4000-8000-000000000001",
       resolution: "1080p",
       format: "mp4",
+      includeCaptions: true,
     });
 
     expect(result).toEqual({ id: 42, status: "processing" });
-    expect(renderMocks.start).toHaveBeenCalledWith(project.id, 1, "1080p");
+    expect(renderMocks.start).toHaveBeenCalledWith(project.id, 1, "1080p", {
+      requestId: "10000000-0000-4000-8000-000000000001",
+      includeCaptions: true,
+    });
   });
 
   it("does not expose or cancel another user's export", async () => {
     const project = await createProject(1, "Private export project");
     const row = await createExport({
+      requestId: "20000000-0000-4000-8000-000000000001",
       projectId: project.id,
       userId: 1,
       storageKey: "",
@@ -83,6 +89,7 @@ describe("server export router", () => {
   it("retries only failed or cancelled owned jobs", async () => {
     const project = await createProject(1, "Retry project");
     const failed = await createExport({
+      requestId: "30000000-0000-4000-8000-000000000001",
       projectId: project.id,
       userId: 1,
       storageKey: "",
@@ -95,6 +102,7 @@ describe("server export router", () => {
       errorMessage: "fixture failure",
     });
     const processing = await createExport({
+      requestId: "30000000-0000-4000-8000-000000000002",
       projectId: project.id,
       userId: 1,
       storageKey: "",
@@ -113,6 +121,11 @@ describe("server export router", () => {
     );
     await caller.export.retry({ id: failed.id });
 
-    expect(renderMocks.start).toHaveBeenCalledWith(project.id, 1, "1080p");
+    expect(renderMocks.start).toHaveBeenCalledWith(
+      project.id,
+      1,
+      "1080p",
+      expect.objectContaining({ includeCaptions: false })
+    );
   });
 });

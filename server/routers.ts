@@ -2,6 +2,9 @@ import { COOKIE_NAME } from "@shared/const";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
@@ -14,27 +17,32 @@ import {
   createMarker,
   createProject,
   deleteClip,
+  deleteCaption,
   deleteMarker,
   deleteProject,
   duplicateProject,
   getAsset,
   getAssetCaptions,
+  getCaption,
   getClip,
   getExport,
   getMarker,
+  getMediaAnalysis,
   getProject,
   getProjectAssets,
   getProjectCaptions,
   getProjectClips,
   getProjectExports,
   getProjectMarkers,
+  getProjectMediaAnalyses,
   getUserProjects,
   isStorageKeyReferenced,
   updateClip,
+  updateCaption,
   updateProject,
 } from "./db";
 import { storageDelete, storagePut } from "./storage";
-import { extractVideoMetadata, isVideoFile } from "./videoMetadata";
+import { probeMediaFile } from "./mediaProbe";
 import { aiEditRequestSchema } from "./aiEdit";
 import { AIProviderError, getAIProvider } from "./_core/nvidia";
 import {
@@ -42,14 +50,27 @@ import {
   cancelRunningAIRequest,
   getPendingAIProposal,
   proposeAIEdit,
+  proposeEvidenceRangeRemoval,
   rejectAIProposal,
 } from "./aiWorkflow";
 import { consumeRateLimit, RateLimitError } from "./rateLimit";
 import { cancelServerExport, startServerExport } from "./renderExport";
+import {
+  cancelMediaAnalysis,
+  captionsToSrtText,
+  captionsToWebVtt,
+  startMediaAnalysis,
+  transcriptAnalysisResultSchema,
+  transcriptionProviderAvailable,
+} from "./mediaAnalysis";
 
 const MAX_CLOUD_UPLOAD_BYTES = 50 * 1024 * 1024;
 const idSchema = z.number().int().positive();
 const finiteNonNegative = z.number().finite().min(0);
+const clipVolume = z.number().finite().min(0).max(2);
+const normalizedPosition = z.number().finite().min(-1).max(1);
+const clipScale = z.number().finite().min(0.1).max(4);
+const cropFraction = z.number().finite().min(0).max(0.9);
 const projectStatusSchema = z.enum(["draft", "editing", "exporting", "done"]);
 
 async function requireOwnedProject(projectId: number, userId: number) {
@@ -203,15 +224,15 @@ export const appRouter = router({
             .max(128),
           sizeBytes: z.number().int().positive().max(MAX_CLOUD_UPLOAD_BYTES),
           duration: finiteNonNegative.optional(),
-          width: z.number().int().min(0).max(16384).optional(),
-          height: z.number().int().min(0).max(16384).optional(),
-          fps: z.number().finite().min(0).max(1000).optional(),
+          width: z.number().int().min(0).max(8192).optional(),
+          height: z.number().int().min(0).max(8192).optional(),
+          fps: z.number().finite().min(0).max(240).optional(),
           hasAudio: z.boolean().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
         const userId = ctx.user.id;
-        consumeRateLimit("upload", userId, 20, 60 * 60 * 1000);
+        await consumeRateLimit("upload", userId, 20, 60 * 60 * 1000);
         await requireOwnedProject(input.projectId, userId);
 
         const buffer = Buffer.from(input.base64Data, "base64");
@@ -225,32 +246,31 @@ export const appRouter = router({
           });
         }
         const safeFileName = input.fileName.replace(/[\\/\u0000-\u001f]/g, "_");
+        const probeDir = await fs.promises.mkdtemp(
+          path.join(path.resolve(os.tmpdir()), "reelio-upload-probe-")
+        );
+        const probePath = path.join(probeDir, "upload.media");
+        let measured;
+        try {
+          await fs.promises.writeFile(probePath, buffer);
+          measured = await probeMediaFile(probePath, {
+            expectedMimeType: input.mimeType,
+          });
+        } finally {
+          const resolved = path.resolve(probeDir);
+          if (
+            path.dirname(resolved) === path.resolve(os.tmpdir()) &&
+            path.basename(resolved).startsWith("reelio-upload-probe-")
+          ) {
+            await fs.promises.rm(resolved, { recursive: true, force: true });
+          }
+        }
         const storageKey = `${userId}/projects/${input.projectId}/assets/${randomUUID()}-${safeFileName}`;
         const { key, url } = await storagePut(
           storageKey,
           buffer,
           input.mimeType
         );
-
-        // Extract video metadata for video files
-        let duration = input.duration ?? 0,
-          width = input.width ?? 0,
-          height = input.height ?? 0,
-          fps = input.fps ?? 30,
-          hasAudio = input.hasAudio ?? false;
-        if (isVideoFile(input.mimeType) && input.duration === undefined) {
-          try {
-            const meta = extractVideoMetadata(buffer);
-            duration = meta.duration;
-            width = meta.width;
-            height = meta.height;
-            fps = meta.fps || 30;
-            hasAudio = meta.hasAudio;
-          } catch {
-            // Metadata extraction failed, use defaults
-          }
-        }
-
         try {
           return await createAsset({
             projectId: input.projectId,
@@ -260,11 +280,11 @@ export const appRouter = router({
             url,
             mimeType: input.mimeType,
             sizeBytes: input.sizeBytes,
-            duration,
-            width,
-            height,
-            fps,
-            hasAudio,
+            duration: measured.duration,
+            width: measured.width,
+            height: measured.height,
+            fps: measured.fps,
+            hasAudio: measured.hasAudio,
           });
         } catch (error) {
           await storageDelete(key);
@@ -317,6 +337,16 @@ export const appRouter = router({
           duration: z.number().finite().positive(),
           timelineStart: finiteNonNegative,
           sortIndex: z.number().int().min(0).default(0),
+          zIndex: z.number().int().min(-32).max(32).default(0),
+          volume: clipVolume.default(1),
+          trackVolume: clipVolume.default(1),
+          positionX: normalizedPosition.default(0),
+          positionY: normalizedPosition.default(0),
+          scale: clipScale.default(1),
+          cropLeft: cropFraction.default(0),
+          cropTop: cropFraction.default(0),
+          cropRight: cropFraction.default(0),
+          cropBottom: cropFraction.default(0),
           locked: z.boolean().default(false),
           visible: z.boolean().default(true),
           muted: z.boolean().default(false),
@@ -358,6 +388,16 @@ export const appRouter = router({
           duration: z.number().finite().positive().optional(),
           timelineStart: finiteNonNegative.optional(),
           sortIndex: z.number().int().min(0).optional(),
+          zIndex: z.number().int().min(-32).max(32).optional(),
+          volume: clipVolume.optional(),
+          trackVolume: clipVolume.optional(),
+          positionX: normalizedPosition.optional(),
+          positionY: normalizedPosition.optional(),
+          scale: clipScale.optional(),
+          cropLeft: cropFraction.optional(),
+          cropTop: cropFraction.optional(),
+          cropRight: cropFraction.optional(),
+          cropBottom: cropFraction.optional(),
           trackId: z.number().int().min(0).max(32).optional(),
           trackType: z.enum(["video", "audio"]).optional(),
           locked: z.boolean().optional(),
@@ -465,6 +505,21 @@ export const appRouter = router({
           duration: secondDuration,
           timelineStart: clip.timelineStart + firstDuration,
           sortIndex: clip.sortIndex + 1,
+          zIndex: clip.zIndex,
+          volume: clip.volume,
+          trackVolume: clip.trackVolume,
+          positionX: clip.positionX,
+          positionY: clip.positionY,
+          scale: clip.scale,
+          cropLeft: clip.cropLeft,
+          cropTop: clip.cropTop,
+          cropRight: clip.cropRight,
+          cropBottom: clip.cropBottom,
+          locked: clip.locked,
+          visible: clip.visible,
+          muted: clip.muted,
+          videoFx: clip.videoFx,
+          transition: clip.transition,
         });
 
         return { success: true, newClipId: newClip?.id };
@@ -483,6 +538,16 @@ export const appRouter = router({
                 duration: z.number().finite().positive(),
                 timelineStart: finiteNonNegative,
                 sortIndex: z.number().int().min(0).default(0),
+                zIndex: z.number().int().min(-32).max(32).optional(),
+                volume: clipVolume.optional(),
+                trackVolume: clipVolume.optional(),
+                positionX: normalizedPosition.optional(),
+                positionY: normalizedPosition.optional(),
+                scale: clipScale.optional(),
+                cropLeft: cropFraction.optional(),
+                cropTop: cropFraction.optional(),
+                cropRight: cropFraction.optional(),
+                cropBottom: cropFraction.optional(),
                 locked: z.boolean().optional(),
                 visible: z.boolean().optional(),
                 muted: z.boolean().optional(),
@@ -500,6 +565,16 @@ export const appRouter = router({
                   duration: z.number().finite().positive().optional(),
                   timelineStart: finiteNonNegative.optional(),
                   sortIndex: z.number().int().min(0).optional(),
+                  zIndex: z.number().int().min(-32).max(32).optional(),
+                  volume: clipVolume.optional(),
+                  trackVolume: clipVolume.optional(),
+                  positionX: normalizedPosition.optional(),
+                  positionY: normalizedPosition.optional(),
+                  scale: clipScale.optional(),
+                  cropLeft: cropFraction.optional(),
+                  cropTop: cropFraction.optional(),
+                  cropRight: cropFraction.optional(),
+                  cropBottom: cropFraction.optional(),
                   trackId: z.number().int().min(0).max(32).optional(),
                   trackType: z.enum(["video", "audio"]).optional(),
                   locked: z.boolean().optional(),
@@ -635,6 +710,252 @@ export const appRouter = router({
         }
         return createCaption(input);
       }),
+    update: protectedProcedure
+      .input(
+        z
+          .object({
+            id: idSchema,
+            text: z.string().trim().min(1).max(4000),
+            startTime: finiteNonNegative,
+            endTime: finiteNonNegative,
+          })
+          .refine(input => input.endTime > input.startTime, {
+            message: "Caption end time must be after its start time",
+            path: ["endTime"],
+          })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const caption = await getCaption(input.id);
+        if (!caption)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Caption not found",
+          });
+        await requireOwnedProject(caption.projectId, ctx.user.id);
+        const siblings = await getProjectCaptions(caption.projectId);
+        if (
+          siblings.some(
+            candidate =>
+              candidate.id !== caption.id &&
+              input.startTime < candidate.endTime &&
+              input.endTime > candidate.startTime
+          )
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Caption timestamps cannot overlap",
+          });
+        }
+        await updateCaption(input.id, {
+          text: input.text,
+          startTime: input.startTime,
+          endTime: input.endTime,
+        });
+        return { success: true };
+      }),
+    delete: protectedProcedure
+      .input(z.object({ id: idSchema }))
+      .mutation(async ({ ctx, input }) => {
+        const caption = await getCaption(input.id);
+        if (!caption)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Caption not found",
+          });
+        await requireOwnedProject(caption.projectId, ctx.user.id);
+        await deleteCaption(input.id);
+        return { success: true };
+      }),
+    formats: protectedProcedure
+      .input(z.object({ projectId: idSchema }))
+      .query(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
+        const cues = await getProjectCaptions(input.projectId);
+        return {
+          srt: captionsToSrtText(cues),
+          webvtt: captionsToWebVtt(cues),
+          cueCount: cues.length,
+        };
+      }),
+  }),
+
+  /* ─── Durable media intelligence ─── */
+  analysis: router({
+    capabilities: publicProcedure.query(() => ({
+      sceneDetection: {
+        available: true,
+        provider: "ffmpeg-scene-score",
+        verified: true,
+      },
+      transcription: {
+        available: transcriptionProviderAvailable(),
+        provider: transcriptionProviderAvailable() ? "forge-whisper" : null,
+        verified: false,
+      },
+    })),
+    list: protectedProcedure
+      .input(z.object({ projectId: idSchema }))
+      .query(async ({ ctx, input }) => {
+        await requireOwnedProject(input.projectId, ctx.user.id);
+        return getProjectMediaAnalyses(input.projectId, ctx.user.id);
+      }),
+    start: protectedProcedure
+      .input(
+        z.object({
+          requestId: z.string().uuid(),
+          projectId: idSchema,
+          assetId: idSchema,
+          kind: z.enum(["transcription", "scene"]),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        await consumeRateLimit(
+          "media-analysis",
+          ctx.user.id,
+          20,
+          60 * 60 * 1000
+        );
+        try {
+          return await startMediaAnalysis({ ...input, userId: ctx.user.id });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Could not start analysis";
+          throw new TRPCError({
+            code: /not owned/i.test(message) ? "FORBIDDEN" : "BAD_REQUEST",
+            message,
+          });
+        }
+      }),
+    cancel: protectedProcedure
+      .input(z.object({ id: z.string().uuid() }))
+      .mutation(async ({ ctx, input }) => ({
+        success: await cancelMediaAnalysis(input.id, ctx.user.id),
+      })),
+    retry: protectedProcedure
+      .input(z.object({ id: z.string().uuid(), requestId: z.string().uuid() }))
+      .mutation(async ({ ctx, input }) => {
+        const row = await getMediaAnalysis(input.id, ctx.user.id);
+        if (!row)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Analysis not found",
+          });
+        if (row.status !== "failed" && row.status !== "cancelled")
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Only failed or cancelled analyses can be retried",
+          });
+        await consumeRateLimit(
+          "media-analysis",
+          ctx.user.id,
+          20,
+          60 * 60 * 1000
+        );
+        return startMediaAnalysis({
+          requestId: input.requestId,
+          projectId: row.projectId,
+          assetId: row.assetId,
+          userId: ctx.user.id,
+          kind: row.kind,
+        });
+      }),
+    proposeFillerRemoval: protectedProcedure
+      .input(
+        z.object({
+          requestId: z.string().uuid(),
+          analysisId: z.string().uuid(),
+          occurrenceIndices: z.array(z.number().int().min(0)).min(1).max(200),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const analysis = await getMediaAnalysis(input.analysisId, ctx.user.id);
+        if (!analysis)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Analysis not found",
+          });
+        if (
+          analysis.kind !== "transcription" ||
+          analysis.status !== "done" ||
+          !analysis.resultJson
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "A completed timestamped transcript is required",
+          });
+        }
+        const parsed = transcriptAnalysisResultSchema.safeParse(
+          JSON.parse(analysis.resultJson)
+        );
+        if (!parsed.success)
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Stored transcript evidence is invalid",
+          });
+        const selectedIndices = [...new Set(input.occurrenceIndices)].sort(
+          (a, b) => a - b
+        );
+        if (
+          selectedIndices.some(index => index >= parsed.data.fillers.length)
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A selected filler occurrence does not exist",
+          });
+        }
+        const clips = (await getProjectClips(analysis.projectId)).filter(
+          clip =>
+            clip.assetId === analysis.assetId && clip.visible && !clip.locked
+        );
+        const mapped = selectedIndices.flatMap(index => {
+          const occurrence = parsed.data.fillers[index];
+          return clips.flatMap(clip => {
+            const sourceEnd = clip.sourceStart + clip.duration;
+            const start = Math.max(occurrence.start, clip.sourceStart);
+            const end = Math.min(occurrence.end, sourceEnd);
+            return end > start
+              ? [
+                  {
+                    start: clip.timelineStart + start - clip.sourceStart,
+                    end: clip.timelineStart + end - clip.sourceStart,
+                  },
+                ]
+              : [];
+          });
+        });
+        const ranges = mapped
+          .sort((a, b) => a.start - b.start || a.end - b.end)
+          .reduce<Array<{ start: number; end: number }>>((merged, range) => {
+            const previous = merged.at(-1);
+            if (previous && range.start <= previous.end + 0.001) {
+              previous.end = Math.max(previous.end, range.end);
+            } else {
+              merged.push({ ...range });
+            }
+            return merged;
+          }, []);
+        if (ranges.length === 0)
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "The selected filler words are outside the current timeline",
+          });
+        await consumeRateLimit("ai-edit", ctx.user.id, 30, 60 * 60 * 1000);
+        return proposeEvidenceRangeRemoval(
+          {
+            requestId: input.requestId,
+            projectId: analysis.projectId,
+            evidenceId: analysis.id,
+            provider: parsed.data.provider,
+            ranges,
+            observations: selectedIndices.map(index => {
+              const filler = parsed.data.fillers[index];
+              return `Transcript contains “${filler.text}” at ${filler.start.toFixed(3)}–${filler.end.toFixed(3)} seconds.`;
+            }),
+          },
+          ctx.user.id
+        );
+      }),
   }),
 
   /* ─── Exports ─── */
@@ -649,17 +970,23 @@ export const appRouter = router({
       .input(
         z.object({
           projectId: idSchema,
+          requestId: z.string().uuid(),
           resolution: z.enum(["720p", "1080p"]).default("720p"),
           format: z.literal("mp4").default("mp4"),
+          includeCaptions: z.boolean().default(false),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        consumeRateLimit("export", ctx.user.id, 10, 60 * 60 * 1000);
+        await consumeRateLimit("export", ctx.user.id, 10, 60 * 60 * 1000);
         await requireOwnedProject(input.projectId, ctx.user.id);
         return startServerExport(
           input.projectId,
           ctx.user.id,
-          input.resolution
+          input.resolution,
+          {
+            requestId: input.requestId,
+            includeCaptions: input.includeCaptions,
+          }
         );
       }),
     cancel: protectedProcedure
@@ -672,7 +999,7 @@ export const appRouter = router({
             message: "Export not found",
           });
         await requireOwnedProject(exportRow.projectId, ctx.user.id);
-        return { success: cancelServerExport(input.id) };
+        return { success: await cancelServerExport(input.id) };
       }),
     retry: protectedProcedure
       .input(z.object({ id: idSchema }))
@@ -690,11 +1017,15 @@ export const appRouter = router({
             message: "Only failed or cancelled exports can be retried",
           });
         }
-        consumeRateLimit("export", ctx.user.id, 10, 60 * 60 * 1000);
+        await consumeRateLimit("export", ctx.user.id, 10, 60 * 60 * 1000);
         return startServerExport(
           exportRow.projectId,
           ctx.user.id,
-          exportRow.resolution === "1080p" ? "1080p" : "720p"
+          exportRow.resolution === "1080p" ? "1080p" : "720p",
+          {
+            requestId: randomUUID(),
+            includeCaptions: exportRow.includeCaptions,
+          }
         );
       }),
   }),
@@ -720,11 +1051,16 @@ export const appRouter = router({
           "apply-supported-video-effect",
         ],
         unavailableCapabilities: [
-          "transcription",
-          "caption-generation",
-          "filler-word-detection",
-          "scene-detection",
+          ...(transcriptionProviderAvailable()
+            ? []
+            : ["transcription", "caption-generation", "filler-word-detection"]),
         ],
+        mediaIntelligence: {
+          sceneDetection: "ffmpeg-scene-score",
+          transcription: transcriptionProviderAvailable()
+            ? "forge-whisper"
+            : null,
+        },
       };
     }),
 
@@ -732,7 +1068,12 @@ export const appRouter = router({
       .input(aiEditRequestSchema)
       .mutation(async ({ ctx, input }) => {
         try {
-          consumeRateLimit("ai-proposal", ctx.user.id, 20, 60 * 60 * 1000);
+          await consumeRateLimit(
+            "ai-proposal",
+            ctx.user.id,
+            20,
+            60 * 60 * 1000
+          );
           return await proposeAIEdit(input, ctx.user.id);
         } catch (error) {
           throw aiError(error);
@@ -759,7 +1100,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         try {
-          consumeRateLimit("ai-apply", ctx.user.id, 30, 60 * 60 * 1000);
+          await consumeRateLimit("ai-apply", ctx.user.id, 30, 60 * 60 * 1000);
           return await applyAIProposal(
             input.id,
             ctx.user.id,

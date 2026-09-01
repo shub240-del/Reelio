@@ -19,7 +19,7 @@ function getQueryParam(req: Request, key: string): string | undefined {
 export function registerOAuthRoutes(app: Express) {
   app.get("/api/oauth/callback", async (req: Request, res: Response) => {
     try {
-      consumeRateLimit(
+      await consumeRateLimit(
         "oauth-callback",
         req.ip || "unknown",
         20,

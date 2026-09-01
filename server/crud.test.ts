@@ -1,4 +1,8 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // Use the in-memory mock so tests run without a live MySQL database.
 vi.mock("./db");
@@ -18,7 +22,9 @@ import { resetStore } from "./__mocks__/db";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
-function createAuthContext(userOverrides: Partial<NonNullable<TrpcContext["user"]>> = {}): TrpcContext {
+function createAuthContext(
+  userOverrides: Partial<NonNullable<TrpcContext["user"]>> = {}
+): TrpcContext {
   const user = {
     id: 1,
     openId: "test-crud-user",
@@ -44,7 +50,55 @@ function createAuthContext(userOverrides: Partial<NonNullable<TrpcContext["user"
   };
 }
 
-beforeAll(() => resetStore());
+let fixtureDir = "";
+let videoFixture = Buffer.alloc(0);
+
+beforeAll(async () => {
+  resetStore();
+  fixtureDir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "reelio-crud-test-")
+  );
+  const fixturePath = path.join(fixtureDir, "fixture.mp4");
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      process.env.FFMPEG_PATH || "ffmpeg",
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=160x90:r=24:d=2",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=48000:cl=stereo:d=2",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-shortest",
+        fixturePath,
+      ],
+      { windowsHide: true, stdio: "ignore" }
+    );
+    child.once("error", reject);
+    child.once("close", code =>
+      code === 0 ? resolve() : reject(new Error(`FFmpeg exited ${code}`))
+    );
+  });
+  videoFixture = await fs.promises.readFile(fixturePath);
+}, 20_000);
+
+afterAll(async () => {
+  const resolved = path.resolve(fixtureDir);
+  if (path.basename(resolved).startsWith("reelio-crud-test-"))
+    await fs.promises.rm(resolved, { recursive: true, force: true });
+});
 
 describe("project CRUD - success paths", () => {
   const ctx = createAuthContext();
@@ -102,14 +156,14 @@ describe("clip operations - success paths", () => {
     const project = await caller.project.create({ name: "Clip Ops Test" });
     expect(project.id).toBeDefined();
 
-    // Upload a minimal base64-encoded file (not a real video, but tests the flow)
-    const base64Data = Buffer.from("fake-video-data").toString("base64");
+    // Upload real media so the server-side FFprobe trust boundary is exercised.
+    const base64Data = videoFixture.toString("base64");
     const asset = await caller.asset.upload({
       projectId: project.id,
       base64Data,
       fileName: "test-video.mp4",
       mimeType: "video/mp4",
-      sizeBytes: Buffer.from(base64Data, "base64").length,
+      sizeBytes: videoFixture.length,
     });
     expect(asset.id).toBeDefined();
     expect(asset.name).toBe("test-video.mp4");
@@ -122,7 +176,7 @@ describe("clip operations - success paths", () => {
       timelineStart: 0,
       sortIndex: 0,
       sourceStart: 0,
-      duration: 10,
+      duration: 2,
     });
     expect(clip.id).toBeDefined();
     expect(clip.assetId).toBe(asset.id);
@@ -133,7 +187,10 @@ describe("clip operations - success paths", () => {
     expect(clips.length).toBeGreaterThan(0);
     expect(clips[0]?.id).toBe(clip.id);
 
-    const copy = await caller.project.duplicate({ id: project.id, name: "Clip Ops Copy" });
+    const copy = await caller.project.duplicate({
+      id: project.id,
+      name: "Clip Ops Copy",
+    });
     const [copyAssets, copyClips] = await Promise.all([
       caller.asset.list({ projectId: copy.id }),
       caller.clip.list({ projectId: copy.id }),
@@ -142,6 +199,20 @@ describe("clip operations - success paths", () => {
     expect(copyClips).toHaveLength(1);
     expect(copyClips[0].assetId).toBe(copyAssets[0].id);
     expect(copyClips[0].assetId).not.toBe(asset.id);
+  });
+
+  it("rejects corrupt media before it reaches storage", async () => {
+    const project = await caller.project.create({ name: "Corrupt upload" });
+    const bytes = Buffer.from("not-a-media-container");
+    await expect(
+      caller.asset.upload({
+        projectId: project.id,
+        base64Data: bytes.toString("base64"),
+        fileName: "../../payload.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: bytes.length,
+      })
+    ).rejects.toThrow(/corrupt|unsupported/i);
   });
 });
 
@@ -154,12 +225,12 @@ describe("ownership edge cases", () => {
     const user2Caller = appRouter.createCaller(user2Ctx);
 
     // User 1 creates a project
-    const project = await user1Caller.project.create({ name: "User1 Private Project" });
+    const project = await user1Caller.project.create({
+      name: "User1 Private Project",
+    });
 
     // User 2 tries to access it - should throw
-    await expect(
-      user2Caller.project.get({ id: project.id })
-    ).rejects.toThrow();
+    await expect(user2Caller.project.get({ id: project.id })).rejects.toThrow();
   });
 });
 

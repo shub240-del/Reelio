@@ -2,6 +2,7 @@ export const ENV = {
   appId: process.env.VITE_APP_ID ?? "",
   cookieSecret: process.env.JWT_SECRET ?? "",
   databaseUrl: process.env.DATABASE_URL ?? "",
+  redisUrl: process.env.REDIS_URL ?? "",
   oAuthServerUrl: process.env.OAUTH_SERVER_URL ?? "",
   ownerOpenId: process.env.OWNER_OPEN_ID ?? "",
   isProduction: process.env.NODE_ENV === "production",
@@ -22,6 +23,7 @@ export function assertServerConfiguration(): void {
 
   const missing: string[] = [];
   if (!ENV.databaseUrl) missing.push("DATABASE_URL");
+  if (!ENV.redisUrl) missing.push("REDIS_URL");
   if (!ENV.appId) missing.push("VITE_APP_ID");
   if (!ENV.oAuthServerUrl) missing.push("OAUTH_SERVER_URL");
   if (ENV.cookieSecret.length < 32)

@@ -100,9 +100,21 @@ interface TimelineClip {
   locked: boolean;
   visible: boolean;
   muted: boolean;
+  zIndex?: number;
+  volume?: number;
+  trackVolume?: number;
+  positionX?: number;
+  positionY?: number;
+  scale?: number;
+  cropLeft?: number;
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
   transition?: string | null;
   videoFx?: string | null;
 }
+
+type EditorCaptionCue = CaptionCue & { id?: number; assetId?: number };
 
 /* ─── Helpers ─── */
 function formatTime(seconds: number): string {
@@ -256,7 +268,7 @@ export default function Editor() {
   );
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
-  const [captions, setCaptions] = useState<CaptionCue[]>([]);
+  const [captions, setCaptions] = useState<EditorCaptionCue[]>([]);
   const [activeCategory, setActiveCategory] = useState<CategoryTab>("media");
   const [activeSubTab, setActiveSubTab] = useState<MediaSubTab>("your-media");
   const [snapping, setSnapping] = useState<boolean>(true);
@@ -330,6 +342,55 @@ export default function Editor() {
     }
   };
 
+  const updateActiveClipRenderSetting = async (
+    patch: Partial<
+      Pick<
+        TimelineClip,
+        | "volume"
+        | "trackVolume"
+        | "scale"
+        | "positionX"
+        | "positionY"
+        | "zIndex"
+      >
+    >
+  ) => {
+    if (!activeClip) return;
+    try {
+      recordHistory("Adjust clip render settings");
+      await updateClipMutation.mutateAsync({ id: activeClip.id, ...patch });
+      await refetchClips();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not update render settings"
+      );
+    }
+  };
+
+  const updateActiveTrackVolume = async (trackVolume: number) => {
+    if (!activeClip) return;
+    const trackClips = timelineClips.filter(
+      clip =>
+        clip.trackId === activeClip.trackId &&
+        clip.trackType === activeClip.trackType
+    );
+    try {
+      recordHistory("Adjust track volume");
+      await Promise.all(
+        trackClips.map(clip =>
+          updateClipMutation.mutateAsync({ id: clip.id, trackVolume })
+        )
+      );
+      await refetchClips();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not update track volume"
+      );
+    }
+  };
+
   /* Data fetching */
   const projectQuery = trpc.project.get.useQuery(
     { id: projId },
@@ -356,6 +417,21 @@ export default function Editor() {
       refetchInterval: 2000,
     }
   );
+  const cloudCaptionsQuery = trpc.caption.list.useQuery(
+    { projectId: projId },
+    { enabled: reelioMode === "cloud" && !!user && projId > 0 }
+  );
+  const analysisCapabilitiesQuery = trpc.analysis.capabilities.useQuery(
+    undefined,
+    { enabled: reelioMode === "cloud" }
+  );
+  const analysisJobsQuery = trpc.analysis.list.useQuery(
+    { projectId: projId },
+    {
+      enabled: reelioMode === "cloud" && !!user && projId > 0,
+      refetchInterval: 1500,
+    }
+  );
 
   /* Mutation hooks */
   const uploadMutation = trpc.asset.upload.useMutation();
@@ -373,6 +449,12 @@ export default function Editor() {
   const serverExportMutation = trpc.export.create.useMutation();
   const cancelExportMutation = trpc.export.cancel.useMutation();
   const retryExportMutation = trpc.export.retry.useMutation();
+  const startAnalysisMutation = trpc.analysis.start.useMutation();
+  const cancelAnalysisMutation = trpc.analysis.cancel.useMutation();
+  const proposeFillerRemovalMutation =
+    trpc.analysis.proposeFillerRemoval.useMutation();
+  const updateCaptionMutation = trpc.caption.update.useMutation();
+  const deleteCaptionMutation = trpc.caption.delete.useMutation();
 
   /**
    * Undo/Redo.
@@ -435,6 +517,16 @@ export default function Editor() {
     const asset = (assets ?? []).find(a => a.id === c.assetId);
     return {
       ...c,
+      zIndex: c.zIndex ?? 0,
+      volume: c.volume ?? 1,
+      trackVolume: c.trackVolume ?? 1,
+      positionX: c.positionX ?? 0,
+      positionY: c.positionY ?? 0,
+      scale: c.scale ?? 1,
+      cropLeft: c.cropLeft ?? 0,
+      cropTop: c.cropTop ?? 0,
+      cropRight: c.cropRight ?? 0,
+      cropBottom: c.cropBottom ?? 0,
       assetUrl: asset?.url ?? "",
       assetName: asset?.name ?? "Unknown",
     };
@@ -476,7 +568,7 @@ export default function Editor() {
 
   /* Restore track controls from localStorage on mount */
   useEffect(() => {
-    if (projId > 0) {
+    if (projId > 0 && reelioMode === "guest") {
       try {
         const stored = localStorage.getItem(`reelio-track-states-${projId}`);
         if (stored) setTrackStates(JSON.parse(stored) as typeof trackStates);
@@ -484,7 +576,21 @@ export default function Editor() {
         /* corrupt storage — keep defaults */
       }
     }
-  }, [projId]);
+  }, [projId, reelioMode]);
+
+  useEffect(() => {
+    if (reelioMode === "cloud" && cloudCaptionsQuery.data) {
+      setCaptions(
+        cloudCaptionsQuery.data.map(cue => ({
+          id: cue.id,
+          assetId: cue.assetId,
+          text: cue.text,
+          startTime: cue.startTime,
+          endTime: cue.endTime,
+        }))
+      );
+    }
+  }, [cloudCaptionsQuery.data, reelioMode]);
 
   useEffect(() => onModeResolved(setReelioMode), []);
 
@@ -555,7 +661,7 @@ export default function Editor() {
 
   /* Restore captions from localStorage on mount */
   useEffect(() => {
-    if (projId > 0) {
+    if (projId > 0 && reelioMode === "guest") {
       try {
         const stored = localStorage.getItem(`reelio-captions-${projId}`);
         if (stored) setCaptions(JSON.parse(stored) as CaptionCue[]);
@@ -563,7 +669,7 @@ export default function Editor() {
         /* corrupt storage — ignore */
       }
     }
-  }, [projId]);
+  }, [projId, reelioMode]);
 
   const playbackClip = getActiveClip(timelineClips, currentTime);
   const activeClip = selectedClips[0] ?? playbackClip;
@@ -593,7 +699,12 @@ export default function Editor() {
         audio.currentTime = sourceTime;
       const trackState = trackStates[clip.trackId === 0 ? "audio0" : "audio1"];
       audio.muted = clip.muted || trackState?.muted === true;
-      audio.volume = audio.muted ? 0 : 1;
+      audio.volume = audio.muted
+        ? 0
+        : Math.max(
+            0,
+            Math.min(1, (clip.volume ?? 1) * (clip.trackVolume ?? 1))
+          );
       if (isPlaying) {
         void audio.play().catch(() => undefined);
       } else {
@@ -673,8 +784,10 @@ export default function Editor() {
     try {
       await serverExportMutation.mutateAsync({
         projectId: projId,
+        requestId: crypto.randomUUID(),
         resolution: "720p",
         format: "mp4",
+        includeCaptions: captions.length > 0,
       });
       await exportJobsQuery.refetch();
       toast.info(
@@ -724,6 +837,178 @@ export default function Editor() {
         error instanceof Error ? error.message : "Could not retry server render"
       );
     }
+  };
+
+  const latestAnalysis = analysisJobsQuery.data?.[0];
+  const sceneBoundaries = useMemo(() => {
+    const sceneJob = analysisJobsQuery.data?.find(
+      job => job.kind === "scene" && job.status === "done" && job.resultJson
+    );
+    if (!sceneJob?.resultJson)
+      return [] as Array<{ time: number; confidence: number }>;
+    try {
+      const parsed = JSON.parse(sceneJob.resultJson) as {
+        boundaries?: Array<{ time: number; confidence: number }>;
+      };
+      return parsed.boundaries ?? [];
+    } catch {
+      return [];
+    }
+  }, [analysisJobsQuery.data]);
+  const transcriptionEvidence = useMemo(() => {
+    const job = analysisJobsQuery.data?.find(
+      candidate =>
+        candidate.kind === "transcription" &&
+        candidate.status === "done" &&
+        candidate.resultJson
+    );
+    if (!job?.resultJson) return null;
+    try {
+      const result = JSON.parse(job.resultJson) as {
+        text?: string;
+        provider?: string;
+        fillers?: Array<{ text: string; start: number; end: number }>;
+      };
+      if (!Array.isArray(result.fillers)) return null;
+      return {
+        id: job.id,
+        assetId: job.assetId,
+        provider: result.provider ?? job.provider,
+        text: result.text ?? "",
+        fillers: result.fillers.filter(
+          filler =>
+            typeof filler.text === "string" &&
+            Number.isFinite(filler.start) &&
+            Number.isFinite(filler.end) &&
+            filler.start >= 0 &&
+            filler.end > filler.start
+        ),
+      };
+    } catch {
+      return null;
+    }
+  }, [analysisJobsQuery.data]);
+
+  const handleStartAnalysis = async (kind: "transcription" | "scene") => {
+    const candidate =
+      (assets ?? []).find(
+        asset =>
+          asset.id === activeClip?.assetId &&
+          (kind !== "scene" || asset.mimeType.startsWith("video/"))
+      ) ??
+      (assets ?? []).find(asset =>
+        kind === "scene" ? asset.mimeType.startsWith("video/") : asset.hasAudio
+      );
+    if (!candidate) {
+      toast.error(
+        kind === "scene"
+          ? "Add or select a video asset before detecting scenes."
+          : "Add or select media with audio before transcription."
+      );
+      return;
+    }
+    try {
+      const job = await startAnalysisMutation.mutateAsync({
+        requestId: crypto.randomUUID(),
+        projectId: projId,
+        assetId: candidate.id,
+        kind,
+      });
+      await analysisJobsQuery.refetch();
+      if (job.status === "failed") {
+        toast.error(job.errorMessage ?? "Analysis is unavailable.");
+      } else {
+        toast.info(
+          kind === "scene"
+            ? "Measured scene detection started."
+            : "Timestamped transcription started."
+        );
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not start analysis"
+      );
+    }
+  };
+
+  const handleCancelAnalysis = async () => {
+    if (
+      !latestAnalysis ||
+      !["queued", "processing"].includes(latestAnalysis.status)
+    )
+      return;
+    await cancelAnalysisMutation.mutateAsync({ id: latestAnalysis.id });
+    await analysisJobsQuery.refetch();
+    toast.info("Analysis cancellation requested.");
+  };
+
+  const seekToTranscriptTime = (assetId: number, sourceTime: number) => {
+    const clip = timelineClips.find(
+      candidate =>
+        candidate.assetId === assetId &&
+        sourceTime >= candidate.sourceStart &&
+        sourceTime < candidate.sourceStart + candidate.duration
+    );
+    if (clip)
+      setCurrentTime(clip.timelineStart + sourceTime - clip.sourceStart);
+  };
+
+  const handleProposeFillerRemoval = async (occurrenceIndices: number[]) => {
+    if (!transcriptionEvidence) return;
+    try {
+      const proposal = await proposeFillerRemovalMutation.mutateAsync({
+        requestId: crypto.randomUUID(),
+        analysisId: transcriptionEvidence.id,
+        occurrenceIndices,
+      });
+      setPendingPlan(proposal.plan);
+      setPendingProposalId(proposal.id);
+      setPendingProvenance(proposal.provenance);
+      setSelectedOpIndices(proposal.plan.operations.map((_, index) => index));
+      setReviewInstruction("Remove timestamped filler words");
+      setAiMessages(messages => [
+        ...messages,
+        {
+          role: "assistant",
+          content: `${proposal.plan.summary} Review the measured ranges before applying; nothing has changed yet.`,
+        },
+      ]);
+      toast.info("Filler removal proposal is ready for review.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not create a filler removal proposal"
+      );
+    }
+  };
+
+  const persistCaption = async (cue: EditorCaptionCue) => {
+    if (reelioMode === "cloud" && cue.id) {
+      await updateCaptionMutation.mutateAsync({
+        id: cue.id,
+        text: cue.text,
+        startTime: cue.startTime,
+        endTime: cue.endTime,
+      });
+      await cloudCaptionsQuery.refetch();
+    } else {
+      localStorage.setItem(
+        `reelio-captions-${projId}`,
+        JSON.stringify(captions)
+      );
+    }
+  };
+
+  const removeCaption = async (cue: EditorCaptionCue, index: number) => {
+    if (reelioMode === "cloud" && cue.id) {
+      await deleteCaptionMutation.mutateAsync({ id: cue.id });
+      await cloudCaptionsQuery.refetch();
+      return;
+    }
+    const next = captions.filter((_, cueIndex) => cueIndex !== index);
+    setCaptions(next);
+    localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(next));
   };
 
   const toggleOpSelection = useCallback((index: number) => {
@@ -2043,20 +2328,213 @@ export default function Editor() {
             </div>
           ) : activeCategory === "transcript" ? (
             <div className="p-3 space-y-2 overflow-y-auto no-scrollbar text-xs">
+              <div
+                className="flex flex-wrap gap-2"
+                aria-label="Media analysis controls"
+              >
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleStartAnalysis("scene")}
+                  disabled={
+                    reelioMode !== "cloud" || startAnalysisMutation.isPending
+                  }
+                  className="h-7 text-[10px]"
+                >
+                  Detect scenes
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleStartAnalysis("transcription")}
+                  disabled={
+                    reelioMode !== "cloud" ||
+                    startAnalysisMutation.isPending ||
+                    !analysisCapabilitiesQuery.data?.transcription.available
+                  }
+                  title={
+                    analysisCapabilitiesQuery.data?.transcription.available
+                      ? "Generate timestamped transcript and editable captions"
+                      : "Forge speech credentials are not configured"
+                  }
+                  className="h-7 text-[10px]"
+                >
+                  Transcribe media
+                </Button>
+                {latestAnalysis &&
+                ["queued", "processing"].includes(latestAnalysis.status) ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleCancelAnalysis}
+                    className="h-7 text-[10px] text-amber-200"
+                  >
+                    Cancel {latestAnalysis.progress}%
+                  </Button>
+                ) : null}
+              </div>
+              <div className="text-[11px] text-gray-400" role="status">
+                Scene detection is measured locally with FFmpeg. Timestamped
+                transcription is{" "}
+                {analysisCapabilitiesQuery.data?.transcription.available
+                  ? "configured but not yet verified in this environment"
+                  : "unavailable until Forge speech credentials are configured"}
+                .
+              </div>
+              {latestAnalysis?.status === "failed" &&
+              latestAnalysis.errorMessage ? (
+                <div className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-rose-200">
+                  {latestAnalysis.errorMessage}
+                </div>
+              ) : null}
+              {sceneBoundaries.length > 0 ? (
+                <div className="rounded border border-white/[0.08] p-2">
+                  <div className="mb-1 font-medium text-gray-300">
+                    Measured scene boundaries
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {sceneBoundaries.map((boundary, index) => (
+                      <button
+                        type="button"
+                        key={`${boundary.time}-${index}`}
+                        onClick={() => setCurrentTime(boundary.time)}
+                        className="rounded bg-sky-500/10 px-2 py-1 font-mono text-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                        aria-label={`Seek to scene boundary at ${formatTime(boundary.time)}, confidence ${boundary.confidence.toFixed(2)}`}
+                      >
+                        {formatTime(boundary.time)} ·{" "}
+                        {boundary.confidence.toFixed(2)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {transcriptionEvidence ? (
+                <div className="rounded border border-white/[0.08] p-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="font-medium text-gray-300">
+                        Timestamped filler evidence
+                      </div>
+                      <div className="text-[10px] text-gray-500">
+                        Provider: {transcriptionEvidence.provider}
+                      </div>
+                    </div>
+                    {transcriptionEvidence.fillers.length > 0 ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          handleProposeFillerRemoval(
+                            transcriptionEvidence.fillers.map(
+                              (_, index) => index
+                            )
+                          )
+                        }
+                        disabled={
+                          proposeFillerRemovalMutation.isPending ||
+                          !!pendingPlan
+                        }
+                        className="h-7 text-[10px]"
+                      >
+                        Review all removals
+                      </Button>
+                    ) : null}
+                  </div>
+                  {transcriptionEvidence.text ? (
+                    <p className="max-h-20 overflow-y-auto text-[11px] text-gray-400">
+                      {transcriptionEvidence.text}
+                    </p>
+                  ) : null}
+                  {transcriptionEvidence.fillers.length > 0 ? (
+                    <ul
+                      className="space-y-1"
+                      aria-label="Detected filler words"
+                    >
+                      {transcriptionEvidence.fillers.map((filler, index) => (
+                        <li
+                          key={`${filler.start}-${filler.end}-${index}`}
+                          className="flex items-center gap-2 rounded bg-amber-500/[0.06] px-2 py-1"
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              seekToTranscriptTime(
+                                transcriptionEvidence.assetId,
+                                filler.start
+                              )
+                            }
+                            className="font-mono text-amber-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                            aria-label={`Seek to filler ${filler.text} at ${formatTime(filler.start)}`}
+                          >
+                            “{filler.text}” {formatTime(filler.start)}–
+                            {formatTime(filler.end)}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleProposeFillerRemoval([index])}
+                            disabled={
+                              proposeFillerRemovalMutation.isPending ||
+                              !!pendingPlan
+                            }
+                            className="ml-auto text-[10px] text-sky-300 disabled:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                            aria-label={`Review removal of filler ${filler.text}`}
+                          >
+                            Review removal
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="text-[11px] text-gray-500">
+                      No filler words were detected in this transcript.
+                    </div>
+                  )}
+                </div>
+              ) : null}
               <div className="text-[11px] text-gray-400 mb-1">
-                Click any timestamp to seek playhead:
+                Captions are editable; activate a timestamp to seek.
               </div>
               {captions.length > 0 ? (
                 captions.map((cue, idx) => (
                   <div
-                    key={idx}
-                    onClick={() => setCurrentTime(cue.startTime)}
-                    className="p-2 rounded bg-[#181822] border border-white/[0.06] hover:border-sky-400 cursor-pointer flex items-start gap-2"
+                    key={cue.id ?? idx}
+                    className="p-2 rounded bg-[#181822] border border-white/[0.06] focus-within:border-sky-400 flex items-start gap-2"
                   >
-                    <span className="text-[10px] font-mono text-sky-400 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setCurrentTime(cue.startTime)}
+                      className="text-[10px] font-mono text-sky-400 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                      aria-label={`Seek to caption at ${formatTime(cue.startTime)}`}
+                    >
                       {formatTime(cue.startTime)}
-                    </span>
-                    <span className="text-gray-300">{cue.text}</span>
+                    </button>
+                    <input
+                      value={cue.text}
+                      onChange={event =>
+                        setCaptions(current =>
+                          current.map((candidate, cueIndex) =>
+                            cueIndex === idx
+                              ? { ...candidate, text: event.target.value }
+                              : candidate
+                          )
+                        )
+                      }
+                      onBlur={() => void persistCaption(cue)}
+                      aria-label={`Edit caption ${idx + 1}`}
+                      className="min-w-0 flex-1 bg-transparent text-gray-200 outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void removeCaption(cue, idx)}
+                      aria-label={`Delete caption ${idx + 1}`}
+                      className="text-gray-500 hover:text-rose-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 ))
               ) : (
@@ -2131,6 +2609,95 @@ export default function Editor() {
                         {activeClip.visible !== false ? "Visible" : "Hidden"}
                       </button>
                     </div>
+                    <label className="block text-gray-300">
+                      Clip volume ({(activeClip.volume ?? 1).toFixed(2)})
+                      <input
+                        key={`clip-volume-${activeClip.id}-${activeClip.volume}`}
+                        type="range"
+                        min="0"
+                        max="2"
+                        step="0.05"
+                        defaultValue={activeClip.volume ?? 1}
+                        onBlur={event =>
+                          void updateActiveClipRenderSetting({
+                            volume: Number(event.currentTarget.value),
+                          })
+                        }
+                        className="mt-1 w-full accent-sky-500"
+                      />
+                    </label>
+                    <label className="block text-gray-300">
+                      Track volume ({(activeClip.trackVolume ?? 1).toFixed(2)})
+                      <input
+                        key={`track-volume-${activeClip.id}-${activeClip.trackVolume}`}
+                        type="range"
+                        min="0"
+                        max="2"
+                        step="0.05"
+                        defaultValue={activeClip.trackVolume ?? 1}
+                        onBlur={event =>
+                          void updateActiveTrackVolume(
+                            Number(event.currentTarget.value)
+                          )
+                        }
+                        className="mt-1 w-full accent-sky-500"
+                      />
+                    </label>
+                    {activeClip.trackType === "video" ? (
+                      <div className="space-y-2 border-t border-white/[0.08] pt-2">
+                        <label className="block text-gray-300">
+                          Scale ({(activeClip.scale ?? 1).toFixed(2)}×)
+                          <input
+                            key={`clip-scale-${activeClip.id}-${activeClip.scale}`}
+                            type="range"
+                            min="0.1"
+                            max="2"
+                            step="0.05"
+                            defaultValue={activeClip.scale ?? 1}
+                            onBlur={event =>
+                              void updateActiveClipRenderSetting({
+                                scale: Number(event.currentTarget.value),
+                              })
+                            }
+                            className="mt-1 w-full accent-sky-500"
+                          />
+                        </label>
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              void updateActiveClipRenderSetting({
+                                scale: 0.35,
+                                positionX: 0.6,
+                                positionY: -0.6,
+                                zIndex: 2,
+                              })
+                            }
+                            className="h-7 flex-1 text-[10px]"
+                          >
+                            Picture in picture
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              void updateActiveClipRenderSetting({
+                                scale: 1,
+                                positionX: 0,
+                                positionY: 0,
+                                zIndex: 0,
+                              })
+                            }
+                            className="h-7 text-[10px]"
+                          >
+                            Reset
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <Button
                     size="sm"
