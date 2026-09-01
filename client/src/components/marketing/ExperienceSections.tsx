@@ -99,7 +99,7 @@ const FAQS = [
   ],
   [
     "What can I ask the AI agent to do?",
-    "The current verified commands include removing the first five seconds and detecting/removing silence from real audio assets.",
+    "Verified commands include removing a specified opening duration, splitting at the playhead, muting, unmuting or removing selected clips, applying supported video effects, and reviewing browser-decoded silence cuts. Broader planning requires a configured NVIDIA provider.",
   ],
   [
     "Can I export the result?",
@@ -112,18 +112,19 @@ function ProductShowcase() {
   const steps = [
     {
       id: "scan",
-      label: "Analyse",
-      caption: "Reelio reads the rhythm of your footage.",
+      label: "Example scan",
+      caption:
+        "Example: browser-decoded silence evidence is surfaced for review.",
     },
     {
       id: "review",
       label: "Review",
-      caption: "Inspect the suggested ranges before applying them.",
+      caption: "Example: inspect validated ranges before applying them.",
     },
     {
       id: "apply",
       label: "Apply",
-      caption: "The timeline becomes shorter, not flatter.",
+      caption: "Example: accepted operations update the real timeline.",
     },
   ] as const;
   const scanWidth = step === "scan" ? "38%" : step === "review" ? "66%" : "92%";
@@ -149,6 +150,39 @@ function ProductShowcase() {
           />
         </Reveal>
 
+        <Reveal delay={60} className="mt-8 grid gap-3 md:grid-cols-3">
+          <GlassCard className="p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">
+              Verified now
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-zinc-300">
+              Typed proposals for opening cuts, playhead splits, selected-clip
+              mute or removal, supported effects, and browser-decoded silence.
+              Every proposal requires Apply or Reject.
+            </p>
+          </GlassCard>
+          <GlassCard className="p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-300">
+              Provider-assisted
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-zinc-300">
+              When NVIDIA NIM is configured, broader instructions become strict
+              JSON plans validated against the server-owned timeline. Provider
+              output never executes directly.
+            </p>
+          </GlassCard>
+          <GlassCard className="p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-300">
+              Not available
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-zinc-300">
+              Transcription, generated captions, filler-word detection, and
+              scene detection are not claimed or simulated without real analysis
+              infrastructure.
+            </p>
+          </GlassCard>
+        </Reveal>
+
         <Reveal delay={100} className="mt-12">
           <GlassCard className="p-3 sm:p-5 lg:p-7">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/[0.07] px-2 pb-4 sm:px-3">
@@ -166,7 +200,9 @@ function ProductShowcase() {
                 </div>
               </div>
               <span className="rounded-full border border-[var(--reelio-cyan)]/25 bg-[var(--reelio-cyan)]/10 px-2.5 py-1 text-[11px] font-medium text-cyan-200">
-                {step === "apply" ? "Timeline updated" : "Draft suggestion"}
+                {step === "apply"
+                  ? "Example: applied"
+                  : "Illustrative walkthrough"}
               </span>
             </div>
 

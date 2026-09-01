@@ -36,6 +36,9 @@ export interface TimelineClip {
   locked: boolean;
   visible: boolean;
   muted: boolean;
+  /** Persisted visual effect. Only values from the shared allowlist are accepted. */
+  videoFx?: string | null;
+  transition?: string | null;
 }
 
 export interface TimelineAsset {
@@ -47,7 +50,9 @@ export interface TimelineAsset {
   fps: number;
 }
 
-export type AssetMap = Map<number, TimelineAsset> | Record<number, TimelineAsset>;
+export type AssetMap =
+  | Map<number, TimelineAsset>
+  | Record<number, TimelineAsset>;
 
 export interface TimeRange {
   start: number;
@@ -109,11 +114,22 @@ export function cloneClip(clip: TimelineClip): TimelineClip {
  * footage is far worse than shortening it by a few milliseconds. Returns null
  * only when nothing usable is left.
  */
-export function clampClipToAsset(clip: TimelineClip, asset: TimelineAsset | undefined): TimelineClip | null {
+export function clampClipToAsset(
+  clip: TimelineClip,
+  asset: TimelineAsset | undefined
+): TimelineClip | null {
   if (!asset) return null;
   const next = cloneClip(clip);
 
-  next.sourceStart = round(Math.max(0, Math.min(next.sourceStart, Math.max(0, asset.duration - MIN_CLIP_DURATION))));
+  next.sourceStart = round(
+    Math.max(
+      0,
+      Math.min(
+        next.sourceStart,
+        Math.max(0, asset.duration - MIN_CLIP_DURATION)
+      )
+    )
+  );
   const maxDuration = round(asset.duration - next.sourceStart);
   next.duration = round(Math.max(0, Math.min(next.duration, maxDuration)));
   next.timelineStart = round(Math.max(0, next.timelineStart));
@@ -134,7 +150,7 @@ export function sortClips(clips: TimelineClip[]): TimelineClip[] {
       a.trackId - b.trackId ||
       a.timelineStart - b.timelineStart ||
       a.sortIndex - b.sortIndex ||
-      a.id - b.id,
+      a.id - b.id
   );
 }
 
@@ -160,7 +176,10 @@ function resolveOverlaps(clips: TimelineClip[]): TimelineClip[] {
  * The single funnel every mutation returns through. Clamps, drops empties,
  * de-overlaps and renumbers.
  */
-export function normalizeTimeline(clips: TimelineClip[], assets: AssetMap): TimelineClip[] {
+export function normalizeTimeline(
+  clips: TimelineClip[],
+  assets: AssetMap
+): TimelineClip[] {
   const clamped: TimelineClip[] = [];
   for (const clip of clips) {
     const next = clampClipToAsset(clip, getAsset(assets, clip.assetId));
@@ -187,15 +206,21 @@ export function timelineDuration(clips: TimelineClip[]): number {
 }
 
 export function trackIdsOf(clips: TimelineClip[]): number[] {
-  return [...new Set(clips.map((c) => c.trackId))].sort((a, b) => a - b);
+  return [...new Set(clips.map(c => c.trackId))].sort((a, b) => a - b);
 }
 
-export function clipsOnTrack(clips: TimelineClip[], trackId: number): TimelineClip[] {
-  return sortClips(clips.filter((c) => c.trackId === trackId));
+export function clipsOnTrack(
+  clips: TimelineClip[],
+  trackId: number
+): TimelineClip[] {
+  return sortClips(clips.filter(c => c.trackId === trackId));
 }
 
-export function findClip(clips: TimelineClip[], clipId: number): TimelineClip | undefined {
-  return clips.find((c) => c.id === clipId);
+export function findClip(
+  clips: TimelineClip[],
+  clipId: number
+): TimelineClip | undefined {
+  return clips.find(c => c.id === clipId);
 }
 
 /**
@@ -205,19 +230,26 @@ export function findClip(clips: TimelineClip[], clipId: number): TimelineClip | 
 export function resolveAtTime(
   clips: TimelineClip[],
   time: number,
-  trackId?: number,
+  trackId?: number
 ): { clip: TimelineClip; sourceTime: number } | null {
-  const candidates = trackId === undefined ? clips : clips.filter((c) => c.trackId === trackId);
+  const candidates =
+    trackId === undefined ? clips : clips.filter(c => c.trackId === trackId);
   for (const clip of sortClips(candidates)) {
     if (time >= clip.timelineStart - EPS && time < clipEnd(clip) - EPS) {
-      return { clip, sourceTime: round(clip.sourceStart + (time - clip.timelineStart)) };
+      return {
+        clip,
+        sourceTime: round(clip.sourceStart + (time - clip.timelineStart)),
+      };
     }
   }
   return null;
 }
 
 /** Next clip boundary at or after `time`; used to schedule playback switches. */
-export function nextBoundaryAfter(clips: TimelineClip[], time: number): number | null {
+export function nextBoundaryAfter(
+  clips: TimelineClip[],
+  time: number
+): number | null {
   let best: number | null = null;
   for (const clip of clips) {
     for (const edge of [clip.timelineStart, clipEnd(clip)]) {
@@ -235,7 +267,11 @@ export interface RippleOption {
 }
 
 /** Lays every clip on a track end-to-end from `startAt`, removing gaps. */
-export function rippleTrack(clips: TimelineClip[], trackId: number, startAt = 0): TimelineClip[] {
+export function rippleTrack(
+  clips: TimelineClip[],
+  trackId: number,
+  startAt = 0
+): TimelineClip[] {
   const out = clips.map(cloneClip);
   let cursor = startAt;
   for (const clip of sortClips(out)) {
@@ -270,7 +306,7 @@ export interface AddClipInput {
 export function addClip(
   clips: TimelineClip[],
   assets: AssetMap,
-  input: AddClipInput,
+  input: AddClipInput
 ): { clips: TimelineClip[]; clip: TimelineClip | null } {
   const asset = getAsset(assets, input.assetId);
   if (!asset) return { clips: normalizeTimeline(clips, assets), clip: null };
@@ -280,7 +316,8 @@ export function addClip(
   const sourceStart = round(Math.max(0, input.sourceStart ?? 0));
   const duration = round(input.duration ?? asset.duration - sourceStart);
   const timelineStart =
-    input.timelineStart ?? timelineDuration(clips.filter((c) => c.trackId === trackId));
+    input.timelineStart ??
+    timelineDuration(clips.filter(c => c.trackId === trackId));
 
   const clip: TimelineClip = {
     id: nextTempId(),
@@ -297,21 +334,24 @@ export function addClip(
   };
 
   const next = normalizeTimeline([...clips.map(cloneClip), clip], assets);
-  return { clips: next, clip: next.find((c) => c.id === clip.id) ?? null };
+  return { clips: next, clip: next.find(c => c.id === clip.id) ?? null };
 }
 
 export function removeClips(
   clips: TimelineClip[],
   ids: number[],
   assets: AssetMap,
-  opts: RippleOption = {},
+  opts: RippleOption = {}
 ): TimelineClip[] {
   const doomed = new Set(ids);
-  const survivors = clips.filter((c) => !doomed.has(c.id) || c.locked);
-  const tracks = [...new Set(clips.filter((c) => doomed.has(c.id)).map((c) => c.trackId))];
+  const survivors = clips.filter(c => !doomed.has(c.id) || c.locked);
+  const tracks = [
+    ...new Set(clips.filter(c => doomed.has(c.id)).map(c => c.trackId)),
+  ];
 
   let next = normalizeTimeline(survivors, assets);
-  if (opts.ripple) for (const trackId of tracks) next = rippleTrack(next, trackId);
+  if (opts.ripple)
+    for (const trackId of tracks) next = rippleTrack(next, trackId);
   return normalizeTimeline(next, assets);
 }
 
@@ -328,10 +368,10 @@ export function trimClip(
   clipId: number,
   edge: "start" | "end",
   toTime: number,
-  opts: RippleOption = {},
+  opts: RippleOption = {}
 ): TimelineClip[] {
   const out = clips.map(cloneClip);
-  const clip = out.find((c) => c.id === clipId);
+  const clip = out.find(c => c.id === clipId);
   if (!clip || clip.locked) return normalizeTimeline(out, assets);
 
   const asset = getAsset(assets, clip.assetId);
@@ -340,7 +380,9 @@ export function trimClip(
   if (edge === "start") {
     const maxStart = round(clipEnd(clip) - MIN_CLIP_DURATION);
     const minStart = round(clip.timelineStart - clip.sourceStart); // cannot expand past source head
-    const target = round(Math.min(Math.max(toTime, Math.max(0, minStart)), maxStart));
+    const target = round(
+      Math.min(Math.max(toTime, Math.max(0, minStart)), maxStart)
+    );
     const delta = round(target - clip.timelineStart);
     if (Math.abs(delta) < EPS) return normalizeTimeline(out, assets);
     clip.timelineStart = target;
@@ -348,7 +390,9 @@ export function trimClip(
     clip.duration = round(clip.duration - delta);
   } else {
     const minEnd = round(clip.timelineStart + MIN_CLIP_DURATION);
-    const maxEnd = round(clip.timelineStart + (asset.duration - clip.sourceStart));
+    const maxEnd = round(
+      clip.timelineStart + (asset.duration - clip.sourceStart)
+    );
     const target = round(Math.min(Math.max(toTime, minEnd), maxEnd));
     const delta = round(target - clipEnd(clip));
     if (Math.abs(delta) < EPS) return normalizeTimeline(out, assets);
@@ -356,7 +400,8 @@ export function trimClip(
   }
 
   let next = normalizeTimeline(out, assets);
-  if (opts.ripple) next = normalizeTimeline(rippleTrack(next, clip.trackId), assets);
+  if (opts.ripple)
+    next = normalizeTimeline(rippleTrack(next, clip.trackId), assets);
   return next;
 }
 
@@ -365,15 +410,27 @@ export function splitClip(
   clips: TimelineClip[],
   assets: AssetMap,
   clipId: number,
-  atTime: number,
+  atTime: number
 ): { clips: TimelineClip[]; leftId: number | null; rightId: number | null } {
   const out = clips.map(cloneClip);
-  const clip = out.find((c) => c.id === clipId);
-  if (!clip || clip.locked) return { clips: normalizeTimeline(out, assets), leftId: null, rightId: null };
+  const clip = out.find(c => c.id === clipId);
+  if (!clip || clip.locked)
+    return {
+      clips: normalizeTimeline(out, assets),
+      leftId: null,
+      rightId: null,
+    };
 
   const offset = round(atTime - clip.timelineStart);
-  if (offset < MIN_CLIP_DURATION - EPS || offset > clip.duration - MIN_CLIP_DURATION + EPS) {
-    return { clips: normalizeTimeline(out, assets), leftId: null, rightId: null };
+  if (
+    offset < MIN_CLIP_DURATION - EPS ||
+    offset > clip.duration - MIN_CLIP_DURATION + EPS
+  ) {
+    return {
+      clips: normalizeTimeline(out, assets),
+      leftId: null,
+      rightId: null,
+    };
   }
 
   const right: TimelineClip = {
@@ -387,7 +444,11 @@ export function splitClip(
   clip.duration = offset;
   out.push(right);
 
-  return { clips: normalizeTimeline(out, assets), leftId: clip.id, rightId: right.id };
+  return {
+    clips: normalizeTimeline(out, assets),
+    leftId: clip.id,
+    rightId: right.id,
+  };
 }
 
 /**
@@ -403,10 +464,10 @@ export function moveClip(
   assets: AssetMap,
   clipId: number,
   to: { trackId?: number; timelineStart: number },
-  opts: RippleOption = {},
+  opts: RippleOption = {}
 ): TimelineClip[] {
   const out = clips.map(cloneClip);
-  const clip = out.find((c) => c.id === clipId);
+  const clip = out.find(c => c.id === clipId);
   if (!clip || clip.locked) return normalizeTimeline(out, assets);
 
   const fromTrack = clip.trackId;
@@ -417,7 +478,8 @@ export function moveClip(
   let next = normalizeTimeline(out, assets);
   if (opts.ripple) {
     next = normalizeTimeline(rippleTrack(next, clip.trackId), assets);
-    if (fromTrack !== clip.trackId) next = normalizeTimeline(rippleTrack(next, fromTrack), assets);
+    if (fromTrack !== clip.trackId)
+      next = normalizeTimeline(rippleTrack(next, fromTrack), assets);
   }
   return next;
 }
@@ -426,9 +488,11 @@ export function setClipProps(
   clips: TimelineClip[],
   assets: AssetMap,
   clipId: number,
-  props: Partial<Pick<TimelineClip, "locked" | "visible" | "muted" | "trackId">>,
+  props: Partial<Pick<TimelineClip, "locked" | "visible" | "muted" | "trackId">>
 ): TimelineClip[] {
-  const out = clips.map((c) => (c.id === clipId ? { ...c, ...props } : cloneClip(c)));
+  const out = clips.map(c =>
+    c.id === clipId ? { ...c, ...props } : cloneClip(c)
+  );
   return normalizeTimeline(out, assets);
 }
 
@@ -441,7 +505,7 @@ export function setClipProps(
 export function removeRanges(
   clips: TimelineClip[],
   assets: AssetMap,
-  ranges: TimeRange[],
+  ranges: TimeRange[]
 ): TimelineClip[] {
   const merged = mergeRanges(ranges);
   if (merged.length === 0) return normalizeTimeline(clips, assets);
@@ -460,16 +524,21 @@ export function removeRanges(
 
   // 2. drop anything that now sits wholly inside a removed span
   const inside = (clip: TimelineClip) =>
-    merged.some((r) => clip.timelineStart >= r.start - EPS && clipEnd(clip) <= r.end + EPS);
-  out = out.filter((clip) => !inside(clip));
+    merged.some(
+      r => clip.timelineStart >= r.start - EPS && clipEnd(clip) <= r.end + EPS
+    );
+  out = out.filter(clip => !inside(clip));
 
   // 3. shift survivors left by the amount of removed time before them
-  out = out.map((clip) => {
+  out = out.map(clip => {
     let shift = 0;
     for (const r of merged) {
       if (r.end <= clip.timelineStart + EPS) shift += r.end - r.start;
     }
-    return { ...clip, timelineStart: round(Math.max(0, clip.timelineStart - shift)) };
+    return {
+      ...clip,
+      timelineStart: round(Math.max(0, clip.timelineStart - shift)),
+    };
   });
 
   return normalizeTimeline(out, assets);
@@ -478,28 +547,40 @@ export function removeRanges(
 /** Sorts, clamps to >= 0 and unions overlapping/adjacent ranges. */
 export function mergeRanges(ranges: TimeRange[]): TimeRange[] {
   const valid = ranges
-    .map((r) => ({ start: round(Math.max(0, Math.min(r.start, r.end))), end: round(Math.max(r.start, r.end)) }))
-    .filter((r) => r.end - r.start > EPS)
+    .map(r => ({
+      start: round(Math.max(0, Math.min(r.start, r.end))),
+      end: round(Math.max(r.start, r.end)),
+    }))
+    .filter(r => r.end - r.start > EPS)
     .sort((a, b) => a.start - b.start);
 
   const out: TimeRange[] = [];
   for (const range of valid) {
     const last = out[out.length - 1];
-    if (last && range.start <= last.end + EPS) last.end = Math.max(last.end, range.end);
+    if (last && range.start <= last.end + EPS)
+      last.end = Math.max(last.end, range.end);
     else out.push({ ...range });
   }
   return out;
 }
 
 /** Inverse of `mergeRanges` over [0, duration]: the spans that survive a cut. */
-export function invertRanges(ranges: TimeRange[], duration: number): TimeRange[] {
+export function invertRanges(
+  ranges: TimeRange[],
+  duration: number
+): TimeRange[] {
   const merged = mergeRanges(ranges);
   const out: TimeRange[] = [];
   let cursor = 0;
   for (const r of merged) {
-    if (r.start - cursor > EPS) out.push({ start: round(cursor), end: round(Math.min(r.start, duration)) });
+    if (r.start - cursor > EPS)
+      out.push({
+        start: round(cursor),
+        end: round(Math.min(r.start, duration)),
+      });
     cursor = Math.max(cursor, r.end);
   }
-  if (duration - cursor > EPS) out.push({ start: round(cursor), end: round(duration) });
-  return out.filter((r) => r.end - r.start > EPS);
+  if (duration - cursor > EPS)
+    out.push({ start: round(cursor), end: round(duration) });
+  return out.filter(r => r.end - r.start > EPS);
 }

@@ -72,8 +72,12 @@ import { detectSilenceRanges } from "@/editor/silence";
 import { extractMediaEvidence } from "@/editor/mediaIntelligence";
 import { getActiveCue } from "@/editor/captions";
 import { planEditorRequest } from "@/editor/ai";
-import { currentMode } from "@/guest/link";
-import { LeftCategoryNav, type CategoryTab, type MediaSubTab } from "@/components/editor/LeftCategoryNav";
+import { currentMode, onModeResolved, type ReelioMode } from "@/guest/link";
+import {
+  LeftCategoryNav,
+  type CategoryTab,
+  type MediaSubTab,
+} from "@/components/editor/LeftCategoryNav";
 import { MediaGrid } from "@/components/editor/MediaGrid";
 import { AIAgentPanel } from "@/components/editor/AIAgentPanel";
 import { FloatingPlayerControls } from "@/components/editor/FloatingPlayerControls";
@@ -111,11 +115,15 @@ function formatTime(seconds: number): string {
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function fileToBase64(file: File, onProgress?: (progress: number) => void): Promise<string> {
+function fileToBase64(
+  file: File,
+  onProgress?: (progress: number) => void
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -123,9 +131,11 @@ function fileToBase64(file: File, onProgress?: (progress: number) => void): Prom
       const commaIdx = result.indexOf(",");
       resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
     };
-    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
-    reader.onprogress = (event) => {
-      if (event.lengthComputable) onProgress?.((event.loaded / event.total) * 70);
+    reader.onerror = () =>
+      reject(reader.error || new Error("Failed to read file"));
+    reader.onprogress = event => {
+      if (event.lengthComputable)
+        onProgress?.((event.loaded / event.total) * 70);
     };
     reader.readAsDataURL(file);
   });
@@ -135,10 +145,16 @@ function fileToBase64(file: File, onProgress?: (progress: number) => void): Prom
  * Find which clip is active at a given timeline time.
  * Returns the clip if currentTime falls within [timelineStart, timelineStart + duration].
  */
-function getActiveClip(clips: TimelineClip[], time: number): TimelineClip | null {
+function getActiveClip(
+  clips: TimelineClip[],
+  time: number
+): TimelineClip | null {
   const sorted = [...clips].sort((a, b) => a.timelineStart - b.timelineStart);
   for (const clip of sorted) {
-    if (time >= clip.timelineStart && time < clip.timelineStart + clip.duration) {
+    if (
+      time >= clip.timelineStart &&
+      time < clip.timelineStart + clip.duration
+    ) {
       return clip;
     }
   }
@@ -154,10 +170,7 @@ function getActiveClip(clips: TimelineClip[], time: number): TimelineClip | null
  */
 function computeTotalDuration(clips: TimelineClip[]): number {
   if (clips.length === 0) return 60;
-  return Math.max(
-    ...clips.map((c) => c.timelineStart + c.duration),
-    60
-  );
+  return Math.max(...clips.map(c => c.timelineStart + c.duration), 60);
 }
 
 /**
@@ -171,7 +184,8 @@ function computeTotalDuration(clips: TimelineClip[]): number {
  */
 function timelineContentEnd(clips: TimelineClip[]): number {
   let end = 0;
-  for (const clip of clips) end = Math.max(end, clip.timelineStart + clip.duration);
+  for (const clip of clips)
+    end = Math.max(end, clip.timelineStart + clip.duration);
   return end;
 }
 
@@ -201,14 +215,45 @@ export default function Editor() {
   const [selectedClipIds, setSelectedClipIds] = useState<number[]>([]);
   const [snapGuide, setSnapGuide] = useState<number | null>(null);
   /** Live pixel offset of the clip being dragged, before it is committed. */
-  const [dragPreview, setDragPreview] = useState<{ id: number; start: number } | null>(null);
-  const [trimPreview, setTrimPreview] = useState<{ id: number; start: number; duration: number } | null>(null);
-  const [clipMenu, setClipMenu] = useState<{ clipId: number; x: number; y: number } | null>(null);
+  const [dragPreview, setDragPreview] = useState<{
+    id: number;
+    start: number;
+  } | null>(null);
+  const [trimPreview, setTrimPreview] = useState<{
+    id: number;
+    start: number;
+    duration: number;
+  } | null>(null);
+  const [clipMenu, setClipMenu] = useState<{
+    clipId: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const [aiMessages, setAiMessages] = useState<Message[]>([]);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiPhase, setAiPhase] = useState<
+    "idle" | "analysing" | "requesting" | "applying" | "cancelling" | "error"
+  >("idle");
   const [pendingPlan, setPendingPlan] = useState<EditPlan | null>(null);
+  const [pendingProposalId, setPendingProposalId] = useState<string | null>(
+    null
+  );
+  const [pendingProvenance, setPendingProvenance] = useState<{
+    source: string;
+    provider: string | null;
+    observations: string[];
+    inferences: string[];
+    unsupported: string[];
+  } | null>(null);
   const [selectedOpIndices, setSelectedOpIndices] = useState<number[]>([]);
   const [reviewInstruction, setReviewInstruction] = useState<string>("");
+  const [lastAIInstruction, setLastAIInstruction] = useState<string>("");
+  const [activeAIRequestId, setActiveAIRequestId] = useState<string | null>(
+    null
+  );
+  const [reelioMode, setReelioMode] = useState<ReelioMode | null>(() =>
+    currentMode()
+  );
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const [captions, setCaptions] = useState<CaptionCue[]>([]);
@@ -217,7 +262,9 @@ export default function Editor() {
   const [snapping, setSnapping] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isRippleActive, setIsRippleActive] = useState<boolean>(false);
-  const [trackStates, setTrackStates] = useState<Record<string, { muted: boolean; locked: boolean; visible: boolean }>>({
+  const [trackStates, setTrackStates] = useState<
+    Record<string, { muted: boolean; locked: boolean; visible: boolean }>
+  >({
     captions: { muted: false, locked: false, visible: true },
     video0: { muted: false, locked: false, visible: true },
     audio0: { muted: false, locked: false, visible: true },
@@ -229,29 +276,37 @@ export default function Editor() {
 
   const handleToggleTrackMute = (trackKey: string) => {
     recordTrackHistoryRef.current?.(`Mute ${trackKey} track`);
-    setTrackStates((prev) => ({
+    setTrackStates(prev => ({
       ...prev,
       [trackKey]: { ...prev[trackKey], muted: !prev[trackKey]?.muted },
     }));
-    toast.info(`Track ${trackKey} ${!trackStates[trackKey]?.muted ? "muted" : "unmuted"}`);
+    toast.info(
+      `Track ${trackKey} ${!trackStates[trackKey]?.muted ? "muted" : "unmuted"}`
+    );
   };
 
   const handleToggleTrackLock = (trackKey: string) => {
     recordTrackHistoryRef.current?.(`Lock ${trackKey} track`);
-    setTrackStates((prev) => ({
+    setTrackStates(prev => ({
       ...prev,
       [trackKey]: { ...prev[trackKey], locked: !prev[trackKey]?.locked },
     }));
-    toast.info(`Track ${trackKey} ${!trackStates[trackKey]?.locked ? "locked" : "unlocked"}`);
+    toast.info(
+      `Track ${trackKey} ${!trackStates[trackKey]?.locked ? "locked" : "unlocked"}`
+    );
   };
 
   const handleToggleTrackVisible = (trackKey: string) => {
-    recordTrackHistoryRef.current?.(`${trackStates[trackKey]?.visible === false ? "Show" : "Hide"} ${trackKey} track`);
-    setTrackStates((prev) => ({
+    recordTrackHistoryRef.current?.(
+      `${trackStates[trackKey]?.visible === false ? "Show" : "Hide"} ${trackKey} track`
+    );
+    setTrackStates(prev => ({
       ...prev,
       [trackKey]: { ...prev[trackKey], visible: !prev[trackKey]?.visible },
     }));
-    toast.info(`Track ${trackKey} ${!trackStates[trackKey]?.visible ? "visible" : "hidden"}`);
+    toast.info(
+      `Track ${trackKey} ${!trackStates[trackKey]?.visible ? "visible" : "hidden"}`
+    );
   };
 
   const handleApplyVideoFx = async (fxName: string) => {
@@ -261,16 +316,25 @@ export default function Editor() {
     }
     try {
       recordHistory(`Apply ${fxName} effect`);
-      await updateClipMutation.mutateAsync({ id: activeClip.id, videoFx: fxName } as any);
+      await updateClipMutation.mutateAsync({
+        id: activeClip.id,
+        videoFx: fxName,
+      } as any);
       await refetchClips();
       toast.success(`Applied ${fxName} to ${activeClip.assetName}`);
     } catch (err) {
-      toast.error("Failed to apply effect: " + (err instanceof Error ? err.message : "Unknown error"));
+      toast.error(
+        "Failed to apply effect: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
     }
   };
 
   /* Data fetching */
-  const projectQuery = trpc.project.get.useQuery({ id: projId }, { enabled: !!user && projId > 0 });
+  const projectQuery = trpc.project.get.useQuery(
+    { id: projId },
+    { enabled: !!user && projId > 0, retry: false }
+  );
   const project = projectQuery.data;
   const { data: assets, refetch: refetchAssets } = trpc.asset.list.useQuery(
     { projectId: projId },
@@ -281,6 +345,17 @@ export default function Editor() {
     { enabled: !!user && projId > 0 }
   );
   const { data: aiHealth } = trpc.ai.health.useQuery();
+  const pendingAIQuery = trpc.ai.pending.useQuery(
+    { projectId: projId },
+    { enabled: reelioMode === "cloud" && !!user && projId > 0 }
+  );
+  const exportJobsQuery = trpc.export.list.useQuery(
+    { projectId: projId },
+    {
+      enabled: reelioMode === "cloud" && !!user && projId > 0,
+      refetchInterval: 2000,
+    }
+  );
 
   /* Mutation hooks */
   const uploadMutation = trpc.asset.upload.useMutation();
@@ -291,6 +366,13 @@ export default function Editor() {
   const trimClipMutation = trpc.clip.trim.useMutation();
   const splitClipMutation = trpc.clip.split.useMutation();
   const batchCommitMutation = trpc.clip.batchCommit.useMutation();
+  const aiProposeMutation = trpc.ai.propose.useMutation();
+  const aiApplyMutation = trpc.ai.commit.useMutation();
+  const aiRejectMutation = trpc.ai.reject.useMutation();
+  const aiCancelMutation = trpc.ai.cancel.useMutation();
+  const serverExportMutation = trpc.export.create.useMutation();
+  const cancelExportMutation = trpc.export.cancel.useMutation();
+  const retryExportMutation = trpc.export.retry.useMutation();
 
   /**
    * Undo/Redo.
@@ -303,6 +385,8 @@ export default function Editor() {
   const selectionRef = useRef<number[]>([]);
   const autoplayNextRef = useRef(false);
   const audioRefs = useRef(new Map<number, HTMLAudioElement>());
+  const settledAIProposalIdsRef = useRef(new Set<string>());
+  const restoredGuestProposalKeyRef = useRef<string | null>(null);
   selectionRef.current = selectedClipIds;
 
   const {
@@ -320,7 +404,7 @@ export default function Editor() {
     setSelection: setSelectedClipIds,
     getTrackStates: () => trackStatesRef.current,
     setTrackStates,
-    createClip: (clip) =>
+    createClip: clip =>
       createClipMutation.mutateAsync({
         projectId: projId,
         assetId: clip.assetId,
@@ -339,16 +423,16 @@ export default function Editor() {
         videoFx: clip.videoFx,
         transition: clip.transition,
       } as any),
-    updateClip: (patch) => updateClipMutation.mutateAsync(patch as any),
-    deleteClip: (id) => deleteClipMutation.mutateAsync({ id }),
+    updateClip: patch => updateClipMutation.mutateAsync(patch as any),
+    deleteClip: id => deleteClipMutation.mutateAsync({ id }),
     refetch: () => refetchClips(),
   });
   recordTrackHistoryRef.current = recordHistory;
   const { generateWaveform, getWaveform, isGenerating } = useWaveform();
 
   /* Derived */
-  const timelineClips: TimelineClip[] = (clips ?? []).map((c) => {
-    const asset = (assets ?? []).find((a) => a.id === c.assetId);
+  const timelineClips: TimelineClip[] = (clips ?? []).map(c => {
+    const asset = (assets ?? []).find(a => a.id === c.assetId);
     return {
       ...c,
       assetUrl: asset?.url ?? "",
@@ -361,14 +445,16 @@ export default function Editor() {
 
   const totalDuration = computeTotalDuration(timelineClips);
   const activeCue = getActiveCue(captions, currentTime);
-  const selectedClips = timelineClips.filter((c) => selectedClipIds.includes(c.id));
+  const selectedClips = timelineClips.filter(c =>
+    selectedClipIds.includes(c.id)
+  );
   const assetDurationOf = (assetId: number) =>
-    (assets ?? []).find((a) => a.id === assetId)?.duration ?? 0;
+    (assets ?? []).find(a => a.id === assetId)?.duration ?? 0;
 
   const reviewHighlights = useMemo<ReviewRangeHighlight[]>(() => {
     if (!pendingPlan) return [];
     const highlights: ReviewRangeHighlight[] = [];
-    selectedOpIndices.forEach((idx) => {
+    selectedOpIndices.forEach(idx => {
       const op = pendingPlan.operations[idx];
       if (op) {
         highlights.push(...getAffectedRanges(op, timelineClips));
@@ -400,10 +486,70 @@ export default function Editor() {
     }
   }, [projId]);
 
+  useEffect(() => onModeResolved(setReelioMode), []);
+
+  useEffect(() => {
+    const proposal = pendingAIQuery.data;
+    if (
+      !proposal ||
+      pendingPlan ||
+      settledAIProposalIdsRef.current.has(proposal.id)
+    )
+      return;
+    setPendingPlan(proposal.plan);
+    setPendingProposalId(proposal.id);
+    setPendingProvenance(proposal.provenance);
+    setSelectedOpIndices(proposal.plan.operations.map((_, index) => index));
+    setAiMessages(messages => [
+      ...messages,
+      {
+        role: "assistant",
+        content:
+          "Restored a pending server-validated edit proposal. The timeline has not been changed.",
+      },
+    ]);
+  }, [pendingAIQuery.data, pendingPlan]);
+
+  useEffect(() => {
+    if (reelioMode !== "guest" || projId <= 0) return;
+    const key = `reelio-ai-proposal-${projId}`;
+    if (restoredGuestProposalKeyRef.current === key) return;
+    restoredGuestProposalKeyRef.current = key;
+    try {
+      const stored = localStorage.getItem(key);
+      if (!stored) return;
+      const parsed = JSON.parse(stored) as {
+        plan: EditPlan;
+        instruction?: string;
+      };
+      setPendingPlan(parsed.plan);
+      setReviewInstruction(parsed.instruction ?? "Restored guest proposal");
+      setSelectedOpIndices(parsed.plan.operations.map((_, index) => index));
+    } catch {
+      localStorage.removeItem(key);
+    }
+  }, [projId, reelioMode]);
+
+  useEffect(() => {
+    if (reelioMode !== "guest" || projId <= 0) return;
+    const key = `reelio-ai-proposal-${projId}`;
+    if (!pendingPlan) {
+      localStorage.removeItem(key);
+      return;
+    }
+    localStorage.setItem(
+      key,
+      JSON.stringify({ plan: pendingPlan, instruction: reviewInstruction })
+    );
+  }, [pendingPlan, projId, reelioMode, reviewInstruction]);
+
   /* Persist track controls for guest projects. */
   useEffect(() => {
     if (projId > 0) {
-      localStorage.setItem(`reelio-track-states-${projId}`, JSON.stringify(trackStates));
+      localStorage.setItem(
+        `reelio-track-states-${projId}`,
+        JSON.stringify(trackStates)
+      );
     }
   }, [projId, trackStates]);
 
@@ -422,19 +568,20 @@ export default function Editor() {
   const playbackClip = getActiveClip(timelineClips, currentTime);
   const activeClip = selectedClips[0] ?? playbackClip;
   const activeAudioClips = timelineClips.filter(
-    (clip) =>
+    clip =>
       clip.trackType === "audio" &&
       clip.visible !== false &&
-      trackStates[clip.trackId === 0 ? "audio0" : "audio1"]?.visible !== false &&
+      trackStates[clip.trackId === 0 ? "audio0" : "audio1"]?.visible !==
+        false &&
       !trackStates[clip.trackId === 0 ? "audio0" : "audio1"]?.muted &&
       clip.assetUrl &&
       currentTime >= clip.timelineStart &&
-      currentTime < clip.timelineStart + clip.duration,
+      currentTime < clip.timelineStart + clip.duration
   );
 
   /** Keep every audible audio-track clip aligned with the shared timeline clock. */
   useEffect(() => {
-    const activeIds = new Set(activeAudioClips.map((clip) => clip.id));
+    const activeIds = new Set(activeAudioClips.map(clip => clip.id));
     for (const [id, audio] of audioRefs.current) {
       if (!activeIds.has(id)) audio.pause();
     }
@@ -442,7 +589,8 @@ export default function Editor() {
       const audio = audioRefs.current.get(clip.id);
       if (!audio) continue;
       const sourceTime = clip.sourceStart + currentTime - clip.timelineStart;
-      if (Math.abs(audio.currentTime - sourceTime) > 0.08) audio.currentTime = sourceTime;
+      if (Math.abs(audio.currentTime - sourceTime) > 0.08)
+        audio.currentTime = sourceTime;
       const trackState = trackStates[clip.trackId === 0 ? "audio0" : "audio1"];
       audio.muted = clip.muted || trackState?.muted === true;
       audio.volume = audio.muted ? 0 : 1;
@@ -459,8 +607,13 @@ export default function Editor() {
       toast.error("Add media to the timeline before exporting.");
       return false;
     }
-    const exportClips = timelineClips.map((clip) => {
-      const trackKey = clip.trackType === "video" ? "video0" : clip.trackId === 0 ? "audio0" : "audio1";
+    const exportClips = timelineClips.map(clip => {
+      const trackKey =
+        clip.trackType === "video"
+          ? "video0"
+          : clip.trackId === 0
+            ? "audio0"
+            : "audio1";
       const trackState = trackStates[trackKey];
       return {
         ...clip,
@@ -469,7 +622,10 @@ export default function Editor() {
       };
     });
     const hasVideo = exportClips.some(
-      (clip) => clip.trackType === "video" && clip.visible !== false && clip.duration > 0,
+      clip =>
+        clip.trackType === "video" &&
+        clip.visible !== false &&
+        clip.duration > 0
     );
     if (!hasVideo) {
       toast.error("Add at least one visible video clip to export.");
@@ -482,7 +638,7 @@ export default function Editor() {
       const result = await exportTimeline(
         project?.name || "reelio-export",
         exportClips,
-        (assets ?? []).map((a) => ({
+        (assets ?? []).map(a => ({
           id: a.id,
           url: a.url,
           width: a.width || 1280,
@@ -492,12 +648,15 @@ export default function Editor() {
           fps: a.fps ?? 30,
         })),
         captions,
-        (pct) => setExportProgress(pct)
+        pct => setExportProgress(pct)
       );
       toast.success(`Export complete! (${result.sizeKb} KB)`);
       return true;
     } catch (err) {
-      toast.error("Export failed: " + (err instanceof Error ? err.message : "Unknown error"));
+      toast.error(
+        "Export failed: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
       return false;
     } finally {
       setExporting(false);
@@ -505,13 +664,73 @@ export default function Editor() {
     }
   }, [assets, captions, exporting, project?.name, timelineClips, trackStates]);
 
+  const latestServerExport = exportJobsQuery.data?.[0];
+  const handleServerExport = async () => {
+    if (timelineClips.length === 0) {
+      toast.error("Add media to the timeline before exporting.");
+      return;
+    }
+    try {
+      await serverExportMutation.mutateAsync({
+        projectId: projId,
+        resolution: "720p",
+        format: "mp4",
+      });
+      await exportJobsQuery.refetch();
+      toast.info(
+        "Server MP4 render started. You can keep editing while it runs."
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not start server export"
+      );
+    }
+  };
 
-  /* Mutation for AI edit — calls NVIDIA NIM on the server */
-  const aiEditMutation = trpc.ai.edit.useMutation();
+  const handleCancelServerExport = async () => {
+    if (!latestServerExport || latestServerExport.status !== "processing")
+      return;
+    try {
+      const result = await cancelExportMutation.mutateAsync({
+        id: latestServerExport.id,
+      });
+      toast.info(
+        result.success
+          ? "Server render cancellation requested"
+          : "Render is no longer active"
+      );
+      await exportJobsQuery.refetch();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not cancel server render"
+      );
+    }
+  };
+
+  const handleRetryServerExport = async () => {
+    if (
+      !latestServerExport ||
+      !["failed", "cancelled"].includes(latestServerExport.status)
+    )
+      return;
+    try {
+      await retryExportMutation.mutateAsync({ id: latestServerExport.id });
+      await exportJobsQuery.refetch();
+      toast.info("Server MP4 render restarted.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not retry server render"
+      );
+    }
+  };
 
   const toggleOpSelection = useCallback((index: number) => {
-    setSelectedOpIndices((prev) =>
-      prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index].sort((a, b) => a - b),
+    setSelectedOpIndices(prev =>
+      prev.includes(index)
+        ? prev.filter(i => i !== index)
+        : [...prev, index].sort((a, b) => a - b)
     );
   }, []);
 
@@ -520,7 +739,7 @@ export default function Editor() {
       if (!pendingPlan) return;
       const targetOps =
         opsToApply ??
-        selectedOpIndices.map((i) => pendingPlan.operations[i]).filter(Boolean);
+        selectedOpIndices.map(i => pendingPlan.operations[i]).filter(Boolean);
 
       if (targetOps.length === 0) {
         toast.error("No operations selected to apply");
@@ -528,9 +747,53 @@ export default function Editor() {
       }
 
       try {
+        if (reelioMode === "cloud" && pendingProposalId) {
+          setAiLoading(true);
+          setAiPhase("applying");
+          const selectedOperationIndices = opsToApply
+            ? pendingPlan.operations.map((_, index) => index)
+            : selectedOpIndices;
+          const result = await aiApplyMutation.mutateAsync({
+            id: pendingProposalId,
+            selectedOperationIndices,
+          });
+          if (!result.alreadyApplied) {
+            // The mutation has committed, while clipsRef still contains the pre-edit
+            // state needed by undo. Record it before refetching the new timeline.
+            recordHistory(`AI: ${reviewInstruction.slice(0, 60)}`);
+          }
+          await refetchClips();
+          const summaryText = describePlan({
+            summary: "",
+            operations: targetOps,
+          });
+          setAiMessages(messages => [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.alreadyApplied
+                ? "This proposal had already been applied; no duplicate edits were created."
+                : `Applied ${result.appliedCount} validated change${result.appliedCount === 1 ? "" : "s"}: ${summaryText}`,
+            },
+          ]);
+          toast.success(
+            result.alreadyApplied
+              ? "Proposal was already applied"
+              : `Applied ${result.appliedCount} edit${result.appliedCount === 1 ? "" : "s"}`
+          );
+          settledAIProposalIdsRef.current.add(pendingProposalId);
+          setPendingPlan(null);
+          setPendingProposalId(null);
+          setPendingProvenance(null);
+          setSelectedOpIndices([]);
+          setReviewInstruction("");
+          await pendingAIQuery.refetch();
+          return;
+        }
+
         const latestAssets = (await refetchAssets()).data ?? assets ?? [];
         const assetMap = new Map(
-          latestAssets.map((asset) => [
+          latestAssets.map(asset => [
             asset.id,
             {
               id: asset.id,
@@ -540,13 +803,13 @@ export default function Editor() {
               height: asset.height,
               fps: asset.fps ?? 30,
             },
-          ]),
+          ])
         );
 
         const result = applyEditOps(timelineClips, assetMap, targetOps);
 
         if (
-          result.applied.some((op) =>
+          result.applied.some(op =>
             [
               "removeRanges",
               "removeClips",
@@ -555,7 +818,8 @@ export default function Editor() {
               "setClipProps",
               "keepRanges",
               "splitClip",
-            ].includes(op.type),
+              "setVideoEffect",
+            ].includes(op.type)
           )
         ) {
           // Snapshot history BEFORE persistence so undo restores correctly
@@ -565,13 +829,15 @@ export default function Editor() {
           const creates: any[] = [];
           const updates: any[] = [];
           const deletes: number[] = [];
-          const nextIds = new Set(result.clips.map((clip) => clip.id));
+          const nextIds = new Set(result.clips.map(clip => clip.id));
 
           for (const clip of timelineClips) {
             if (!nextIds.has(clip.id)) deletes.push(clip.id);
           }
           for (const clip of result.clips) {
-            const previous = timelineClips.find((candidate) => candidate.id === clip.id);
+            const previous = timelineClips.find(
+              candidate => candidate.id === clip.id
+            );
             if (previous) {
               updates.push({
                 id: clip.id,
@@ -584,6 +850,8 @@ export default function Editor() {
                   locked: clip.locked,
                   visible: clip.visible,
                   muted: clip.muted,
+                  videoFx: clip.videoFx,
+                  transition: clip.transition,
                 },
               });
             } else {
@@ -598,6 +866,8 @@ export default function Editor() {
                 locked: clip.locked,
                 visible: clip.visible,
                 muted: clip.muted,
+                videoFx: clip.videoFx,
+                transition: clip.transition,
               });
             }
           }
@@ -619,28 +889,47 @@ export default function Editor() {
               : [...captions, ...sideEffect.cues];
             setCaptions(next);
             if (projId > 0)
-              localStorage.setItem(`reelio-captions-${projId}`, JSON.stringify(next));
+              localStorage.setItem(
+                `reelio-captions-${projId}`,
+                JSON.stringify(next)
+              );
           }
         }
 
-        const summaryText = describePlan({ summary: "", operations: result.applied });
+        const summaryText = describePlan({
+          summary: "",
+          operations: result.applied,
+        });
         toast.success(`Applied ${result.applied.length} edit(s)`);
 
-        setAiMessages((messages) => [
+        setAiMessages(messages => [
           ...messages,
           {
             role: "assistant",
-            content: `Applied changes:\n${summaryText}${result.skipped.length ? `\n\nSkipped: ${result.skipped.map((item) => item.reason).join(", ")}` : ""}`,
+            content: `Applied changes:\n${summaryText}${result.skipped.length ? `\n\nSkipped: ${result.skipped.map(item => item.reason).join(", ")}` : ""}`,
           },
         ]);
 
         // Clear review mode state
         setPendingPlan(null);
+        setPendingProposalId(null);
+        setPendingProvenance(null);
         setSelectedOpIndices([]);
         setReviewInstruction("");
       } catch (error) {
         const msg = error instanceof Error ? error.message : "Execution failed";
         toast.error(`Could not apply edit: ${msg}`);
+        setAiPhase("error");
+        setAiMessages(messages => [
+          ...messages,
+          {
+            role: "assistant",
+            content: `The proposal was not applied: ${msg}`,
+          },
+        ]);
+      } finally {
+        setAiLoading(false);
+        setAiPhase(phase => (phase === "error" ? "error" : "idle"));
       }
     },
     [
@@ -657,269 +946,354 @@ export default function Editor() {
       selectedOpIndices,
       timelineClips,
       updateClipMutation,
-    ],
+      aiApplyMutation,
+      pendingAIQuery,
+      pendingProposalId,
+      reelioMode,
+    ]
   );
 
-  const handleRejectPlan = useCallback(() => {
-    setPendingPlan(null);
-    setSelectedOpIndices([]);
-    setReviewInstruction("");
-    toast.info("AI edits dismissed");
-    setAiMessages((messages) => [
-      ...messages,
-      {
-        role: "assistant",
-        content: "Edit proposal dismissed. No changes were made to the timeline.",
-      },
-    ]);
-  }, []);
+  const handleRejectPlan = useCallback(async () => {
+    try {
+      if (reelioMode === "cloud" && pendingProposalId) {
+        await aiRejectMutation.mutateAsync({ id: pendingProposalId });
+        settledAIProposalIdsRef.current.add(pendingProposalId);
+      }
+      setPendingPlan(null);
+      setPendingProposalId(null);
+      setPendingProvenance(null);
+      setSelectedOpIndices([]);
+      setReviewInstruction("");
+      toast.info("AI proposal dismissed");
+      setAiMessages(messages => [
+        ...messages,
+        {
+          role: "assistant",
+          content:
+            "Edit proposal dismissed. No changes were made to the timeline.",
+        },
+      ]);
+      if (reelioMode === "cloud") await pendingAIQuery.refetch();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not dismiss proposal";
+      toast.error(message);
+    }
+  }, [aiRejectMutation, pendingAIQuery, pendingProposalId, reelioMode]);
 
   const handleAISendMessage = async (content: string) => {
-    setAiMessages((messages) => [...messages, { role: "user", content }]);
+    const instruction = content.trim();
+    if (!instruction || aiLoading) return;
+    if (pendingPlan) {
+      setAiMessages(messages => [
+        ...messages,
+        {
+          role: "assistant",
+          content:
+            "Apply or dismiss the current proposal before requesting another one.",
+        },
+      ]);
+      return;
+    }
+    setLastAIInstruction(instruction);
+    setAiMessages(messages => [
+      ...messages,
+      { role: "user", content: instruction },
+    ]);
     setAiLoading(true);
+    setAiPhase("analysing");
     try {
-      const lower = content.trim().toLowerCase();
-
-      // Conversational Undo / Redo / Export shortcuts
-      if (lower === "undo" || lower === "revert" || lower === "ctrl+z" || lower === "undo that" || lower === "undo last edit") {
+      const lower = instruction.toLowerCase();
+      if (
+        ["undo", "revert", "ctrl+z", "undo that", "undo last edit"].includes(
+          lower
+        )
+      ) {
         const label = await performUndo();
-        setAiMessages((msgs) => [
-          ...msgs,
+        setAiMessages(messages => [
+          ...messages,
           {
             role: "assistant",
-            content: label ? `Undone: ${label}. Timeline restored to previous state.` : "Nothing to undo in timeline history.",
+            content: label
+              ? `Undone: ${label}.`
+              : "Nothing is available to undo.",
           },
         ]);
         return;
       }
-
-      if (lower === "redo" || lower === "ctrl+y" || lower === "redo that" || lower === "redo last edit") {
+      if (["redo", "ctrl+y", "redo that", "redo last edit"].includes(lower)) {
         const label = await performRedo();
-        setAiMessages((msgs) => [
-          ...msgs,
+        setAiMessages(messages => [
+          ...messages,
           {
             role: "assistant",
-            content: label ? `Redone: ${label}. Timeline restored.` : "Nothing to redo in timeline history.",
+            content: label
+              ? `Redone: ${label}.`
+              : "Nothing is available to redo.",
           },
         ]);
         return;
       }
-
-      if (lower.includes("clear") && (lower.includes("caption") || lower.includes("subtitle"))) {
-        setCaptions([]);
-        if (projId > 0) localStorage.removeItem(`reelio-captions-${projId}`);
-        toast.info("Cleared caption cues");
-        setAiMessages((msgs) => [
-          ...msgs,
-          {
-            role: "assistant",
-            content: "Cleared all caption cues from the Captions track.",
-          },
-        ]);
-        return;
-      }
-
-      if (lower === "export" || lower === "export video" || lower === "render video") {
+      if (
+        lower === "export" ||
+        lower === "export video" ||
+        lower === "render video"
+      ) {
         const completed = await handleExport();
-        setAiMessages((msgs) => [
-          ...msgs,
+        setAiMessages(messages => [
+          ...messages,
           {
             role: "assistant",
             content: completed
-              ? "The browser export completed and the WebM download was created."
-              : "The export did not complete. Check the export notification for the specific reason.",
+              ? "The browser WebM export completed and a download was created."
+              : "The browser export did not complete. No export was recorded as successful.",
+          },
+        ]);
+        return;
+      }
+      if (
+        /(?:generate|add).*(?:caption|subtitle)|transcri(?:be|ption)/i.test(
+          instruction
+        )
+      ) {
+        setAiMessages(messages => [
+          ...messages,
+          {
+            role: "assistant",
+            content:
+              "Timestamped transcription is not configured. Reelio cannot truthfully generate captions without real transcript text.",
           },
         ]);
         return;
       }
 
       const latestAssets = (await refetchAssets()).data ?? assets ?? [];
-
-      if (/^(generate|add) captions?\.?$/i.test(content.trim())) {
-        setAiMessages((msgs) => [
-          ...msgs,
-          {
-            role: "assistant",
-            content: "Caption transcription is not available yet. Reelio will not invent caption text from filenames; connect a speech-to-text provider before using this feature.",
-          },
-        ]);
-        return;
-      }
-
-      // Gather Media Intelligence Evidence across the assets
-      let allSilenceRanges: { start: number; end: number }[] = [];
-      let allTranscriptSegments: { id: number; text: string; start: number; end: number }[] = [];
-      let allFillerWords: { text: string; start: number; end: number; duration: number }[] = [];
-
-      for (const asset of latestAssets) {
-        if (asset.duration > 0) {
-          const evidence = await extractMediaEvidence(asset, { scanAudio: true });
-          allSilenceRanges.push(...evidence.silenceRanges);
-          allTranscriptSegments.push(
-            ...evidence.transcriptSegments.map((s) => ({
-              id: s.id,
-              text: s.text,
-              start: s.start,
-              end: s.end,
-            })),
-          );
-          allFillerWords.push(...evidence.fillerWords);
+      const silenceEvidence: Array<{
+        assetId: number;
+        source: "browser-audio-decoder";
+        ranges: Array<{ start: number; end: number }>;
+      }> = [];
+      const timelineSilenceRanges: Array<{ start: number; end: number }> = [];
+      if (/silence|silent|dead air|pause/i.test(instruction)) {
+        for (const asset of latestAssets) {
+          if (asset.duration <= 0 || !asset.hasAudio) continue;
+          const evidence = await extractMediaEvidence(asset, {
+            scanAudio: true,
+          });
+          silenceEvidence.push({
+            assetId: asset.id,
+            source: "browser-audio-decoder",
+            ranges: evidence.silenceRanges,
+          });
+          for (const clip of timelineClips.filter(
+            candidate => candidate.assetId === asset.id
+          )) {
+            for (const range of evidence.silenceRanges) {
+              const start = Math.max(range.start, clip.sourceStart);
+              const end = Math.min(range.end, clip.sourceStart + clip.duration);
+              if (end > start) {
+                timelineSilenceRanges.push({
+                  start: clip.timelineStart + (start - clip.sourceStart),
+                  end: clip.timelineStart + (end - clip.sourceStart),
+                });
+              }
+            }
+          }
         }
       }
 
-      // Check for target duration constraint (e.g. "30 second short", "make this a 30s short")
-      let targetDuration: number | undefined;
-      const durationMatch = content.match(/(\d+)\s*(?:second|sec|s)\s*(?:short|highlight|summary)/i);
-      if (durationMatch) {
-        targetDuration = parseInt(durationMatch[1], 10);
-      }
-
-      // Build the compact context the server needs — no binary data, no secrets
-      const clipsContext = timelineClips.map((c) => ({
-        id: c.id,
-        assetId: c.assetId,
-        assetName: c.assetName,
-        trackType: c.trackType,
-        trackId: c.trackId,
-        timelineStart: c.timelineStart,
-        duration: c.duration,
-        sourceStart: c.sourceStart,
-        sortIndex: c.sortIndex,
-      }));
-
-      const assetsContext = latestAssets.map((a) => ({
-        id: a.id,
-        name: a.name,
-        mimeType: a.mimeType,
-        duration: a.duration,
-        width: a.width,
-        height: a.height,
-        fps: a.fps ?? 30,
-        hasAudio: a.hasAudio ?? false,
-      }));
-
-      const isDeterministicRequest =
-        /^remove the first 5 seconds?\.?$/i.test(content.trim()) ||
-        /^remove silence\.?$/i.test(content.trim()) ||
-        /^remove silence from the video\.?$/i.test(content.trim());
-      if (isDeterministicRequest) {
-        const normalizedRequest = lower.startsWith("remove silence") ? "Remove silence." : content;
-        const plan = planEditorRequest(normalizedRequest, timelineClips, allSilenceRanges);
+      if (reelioMode === "guest") {
+        const normalized =
+          /^remove (?:the )?(?:silence|silent parts|dead air)\.?$/i.test(
+            instruction
+          )
+            ? "Remove silence."
+            : instruction;
+        const plan = planEditorRequest(
+          normalized,
+          timelineClips,
+          timelineSilenceRanges,
+          {
+            playhead: currentTime,
+            selectedClipIds,
+          }
+        );
         if (plan.operations.length === 0) {
-          setAiMessages((messages) => [...messages, { role: "assistant", content: plan.summary }]);
+          setAiMessages(messages => [
+            ...messages,
+            { role: "assistant", content: plan.summary },
+          ]);
           return;
         }
         setPendingPlan(plan);
+        setPendingProposalId(null);
+        setPendingProvenance({
+          source: timelineSilenceRanges.length
+            ? "browser-audio-evidence"
+            : "deterministic",
+          provider: null,
+          observations: [
+            `Guest timeline contains ${timelineClips.length} clips.`,
+          ],
+          inferences: [],
+          unsupported: [],
+        });
         setSelectedOpIndices(plan.operations.map((_, index) => index));
-        setReviewInstruction(content);
-        setAiMessages((messages) => [...messages, { role: "assistant", content: `${plan.summary} Review the proposed operation before applying it.` }]);
-        return;
-      }
-
-      if (!aiHealth?.available) {
-        setAiMessages((messages) => [
+        setReviewInstruction(instruction);
+        setAiMessages(messages => [
           ...messages,
           {
             role: "assistant",
-            content: "The optional AI planning provider is not configured. Deterministic commands such as “Remove the first 5 seconds” still work.",
+            content: `${plan.summary} Review it before applying; no timeline change has occurred.`,
           },
         ]);
         return;
       }
 
-      // Call NVIDIA NIM through the server — key never leaves the server
-      const { plan } = await aiEditMutation.mutateAsync({
-        instruction: content,
-        clips: clipsContext,
-        assets: assetsContext,
-        silenceRanges: allSilenceRanges,
-        transcriptSegments: allTranscriptSegments,
-        fillerWords: allFillerWords,
-        targetDuration,
+      const requestId = crypto.randomUUID();
+      setActiveAIRequestId(requestId);
+      setAiPhase("requesting");
+      const proposal = await aiProposeMutation.mutateAsync({
+        projectId: projId,
+        requestId,
+        instruction,
         playhead: currentTime,
+        selectedClipIds,
+        silenceEvidence,
       });
-
-      if (plan.operations.length === 0) {
-        setAiMessages((messages) => [
+      if (proposal.plan.operations.length === 0) {
+        setAiMessages(messages => [
           ...messages,
           {
             role: "assistant",
-            content: `I reviewed the timeline and media intelligence evidence (${allSilenceRanges.length} silence intervals, ${allFillerWords.length} filler words, ${allTranscriptSegments.length} transcript segments), but found no operations required for: "${content}".`,
+            content: `${proposal.plan.summary}\nSource: ${proposal.provenance.source}. No timeline change was proposed or applied.`,
           },
         ]);
         return;
       }
-
-      // Open AI Review Mode
-      setPendingPlan(plan);
-      setSelectedOpIndices(plan.operations.map((_, i) => i));
-      setReviewInstruction(content);
-
-      setAiMessages((messages) => [
+      setPendingPlan(proposal.plan);
+      setPendingProposalId(proposal.id);
+      setPendingProvenance(proposal.provenance);
+      setSelectedOpIndices(proposal.plan.operations.map((_, index) => index));
+      setReviewInstruction(instruction);
+      setAiMessages(messages => [
         ...messages,
         {
           role: "assistant",
-          content: `🎯 **AI Edit Plan Proposed**\n\n${plan.summary}\n\n• **Itemized Operations**: ${plan.operations.length} change${plan.operations.length === 1 ? "" : "s"}\n• **Evidence Grounded**: Analyzed ${allSilenceRanges.length} silence intervals and ${allFillerWords.length} filler words.\n\nReview the visual highlights on your timeline and click **Apply Selected** or **Apply All** to commit.`,
+          content: `${proposal.plan.summary}\nSource: ${proposal.provenance.source}. ${proposal.plan.operations.length} validated operation${proposal.plan.operations.length === 1 ? "" : "s"} await review; nothing has been applied.`,
         },
       ]);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "Unknown error";
-      setAiMessages((messages) => [
+      const message =
+        error instanceof Error ? error.message : "Unknown AI request failure";
+      setAiPhase("error");
+      setAiMessages(messages => [
         ...messages,
         {
           role: "assistant",
-          content: `I could not generate an edit plan: ${msg}`,
+          content: `No edit proposal was created: ${message}`,
         },
       ]);
     } finally {
+      setActiveAIRequestId(null);
       setAiLoading(false);
+      setAiPhase(phase => (phase === "error" ? "error" : "idle"));
     }
+  };
+
+  const handleAICancel = async () => {
+    if (!activeAIRequestId) return;
+    setAiPhase("cancelling");
+    try {
+      await aiCancelMutation.mutateAsync({ requestId: activeAIRequestId });
+      setAiMessages(messages => [
+        ...messages,
+        {
+          role: "assistant",
+          content:
+            "Cancellation requested. No proposal will be applied automatically.",
+        },
+      ]);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not cancel AI request"
+      );
+    }
+  };
+
+  const handleAIRetry = () => {
+    if (lastAIInstruction && !aiLoading)
+      void handleAISendMessage(lastAIInstruction);
   };
 
   const handleExecuteQuickAction = (actionType: string) => {
     if (actionType === "silence") void handleAISendMessage("Remove silence.");
-    if (actionType === "first-five") void handleAISendMessage("Remove the first 5 seconds.");
+    if (actionType === "first-five")
+      void handleAISendMessage("Remove the first 5 seconds.");
+    if (actionType === "split-playhead")
+      void handleAISendMessage("Split the selected clip at the playhead.");
   };
-
 
   /**
    * Split targets the selection, falling back to whatever sits under the
    * playhead so the action still works before anything is selected.
    */
-  const splitTargets = selectedClips.length ? selectedClips : activeClip ? [activeClip] : [];
-  const canSplit = splitTargets.some((c) => splitOffset(c, currentTime) !== null);
+  const splitTargets = selectedClips.length
+    ? selectedClips
+    : activeClip
+      ? [activeClip]
+      : [];
+  const canSplit = splitTargets.some(c => splitOffset(c, currentTime) !== null);
 
-  const handleAddAssetToTimeline = useCallback(async (asset: any) => {
-    if (!asset || asset.duration <= 0) {
-      toast.error("This asset has no usable duration");
-      return;
-    }
-    try {
-      await createClipMutation.mutateAsync({
-        projectId: projId,
-        assetId: asset.id,
-        trackType: asset.mimeType.startsWith("audio/") ? "audio" : "video",
-        sourceStart: 0,
-        duration: asset.duration,
-        timelineStart: timelineContentEnd(timelineClips),
-        sortIndex: timelineClips.length,
-      });
-      await refetchClips();
-      toast.success(`Added "${asset.name}" to timeline`);
-    } catch (err) {
-      toast.error("Could not add asset: " + (err instanceof Error ? err.message : "Unknown error"));
-    }
-  }, [createClipMutation, projId, refetchClips, timelineClips, timelineClips.length]);
+  const handleAddAssetToTimeline = useCallback(
+    async (asset: any) => {
+      if (!asset || asset.duration <= 0) {
+        toast.error("This asset has no usable duration");
+        return;
+      }
+      try {
+        await createClipMutation.mutateAsync({
+          projectId: projId,
+          assetId: asset.id,
+          trackType: asset.mimeType.startsWith("audio/") ? "audio" : "video",
+          sourceStart: 0,
+          duration: asset.duration,
+          timelineStart: timelineContentEnd(timelineClips),
+          sortIndex: timelineClips.length,
+        });
+        await refetchClips();
+        toast.success(`Added "${asset.name}" to timeline`);
+      } catch (err) {
+        toast.error(
+          "Could not add asset: " +
+            (err instanceof Error ? err.message : "Unknown error")
+        );
+      }
+    },
+    [
+      createClipMutation,
+      projId,
+      refetchClips,
+      timelineClips,
+      timelineClips.length,
+    ]
+  );
 
-  const handleRemoveAsset = useCallback(async (asset: any) => {
-    try {
-      await deleteAssetMutation.mutateAsync({ id: asset.id });
-      await Promise.all([refetchAssets(), refetchClips()]);
-      toast.success(`Removed "${asset.name}"`);
-    } catch (err) {
-      toast.error("Could not remove asset: " + (err instanceof Error ? err.message : "Unknown error"));
-    }
-  }, [deleteAssetMutation, refetchAssets, refetchClips]);
+  const handleRemoveAsset = useCallback(
+    async (asset: any) => {
+      try {
+        await deleteAssetMutation.mutateAsync({ id: asset.id });
+        await Promise.all([refetchAssets(), refetchClips()]);
+        toast.success(`Removed "${asset.name}"`);
+      } catch (err) {
+        toast.error(
+          "Could not remove asset: " +
+            (err instanceof Error ? err.message : "Unknown error")
+        );
+      }
+    },
+    [deleteAssetMutation, refetchAssets, refetchClips]
+  );
 
   /* Upload handler */
   const handleFileUpload = useCallback(
@@ -938,7 +1312,11 @@ export default function Editor() {
       try {
         const metadata = await probeMedia(file);
         setUploadProgress(10);
-        const mimeType = file.type || (metadata.mimeType.startsWith("audio/") ? metadata.mimeType : "video/mp4");
+        const mimeType =
+          file.type ||
+          (metadata.mimeType.startsWith("audio/")
+            ? metadata.mimeType
+            : "video/mp4");
         const commonPayload = {
           projectId: projId,
           fileName: file.name,
@@ -952,30 +1330,51 @@ export default function Editor() {
         };
         if (mode === "guest") {
           setUploadProgress(70);
-          await uploadMutation.mutateAsync({ ...commonPayload, blob: file } as any);
+          await uploadMutation.mutateAsync({
+            ...commonPayload,
+            blob: file,
+          } as any);
         } else {
           const base64 = await fileToBase64(file, setUploadProgress);
           setUploadProgress(75);
-          await uploadMutation.mutateAsync({ ...commonPayload, base64Data: base64 });
+          await uploadMutation.mutateAsync({
+            ...commonPayload,
+            base64Data: base64,
+          });
         }
         setUploadProgress(100);
         const newAssets = await refetchAssets();
         const newAsset = [...(newAssets.data ?? [])]
-          .filter((asset) => asset.name === file.name && asset.sizeBytes === file.size)
+          .filter(
+            asset => asset.name === file.name && asset.sizeBytes === file.size
+          )
           .sort((a, b) => b.id - a.id)[0];
         if (newAsset && newAsset.duration > 0) {
           await handleAddAssetToTimeline(newAsset);
         } else {
           toast.success(`Imported "${file.name}"`);
         }
-        setTimeout(() => { setUploading(false); setUploadProgress(0); }, 500);
+        setTimeout(() => {
+          setUploading(false);
+          setUploadProgress(0);
+        }, 500);
       } catch (err) {
         setUploading(false);
         setUploadProgress(0);
-        toast.error("Upload failed: " + (err instanceof Error ? err.message : "Unknown error"));
+        toast.error(
+          "Upload failed: " +
+            (err instanceof Error ? err.message : "Unknown error")
+        );
       }
     },
-    [handleAddAssetToTimeline, projId, refetchAssets, timelineClips, timelineClips.length, uploadMutation]
+    [
+      handleAddAssetToTimeline,
+      projId,
+      refetchAssets,
+      timelineClips,
+      timelineClips.length,
+      uploadMutation,
+    ]
   );
 
   /* Video preview follows the playhead, independently of inspector selection. */
@@ -1000,14 +1399,17 @@ export default function Editor() {
   const handlePreviewTimeUpdate = () => {
     if (!playbackClip || !previewVideoRef.current) return;
     const sourceTime = previewVideoRef.current.currentTime;
-    const timelineTime = playbackClip.timelineStart + (sourceTime - playbackClip.sourceStart);
+    const timelineTime =
+      playbackClip.timelineStart + (sourceTime - playbackClip.sourceStart);
     setCurrentTime(timelineTime);
   };
 
   const handlePreviewLoadedMetadata = () => {
     if (!playbackClip || !previewVideoRef.current) return;
-    previewVideoRef.current.currentTime =
-      Math.max(playbackClip.sourceStart, currentTime - playbackClip.timelineStart + playbackClip.sourceStart);
+    previewVideoRef.current.currentTime = Math.max(
+      playbackClip.sourceStart,
+      currentTime - playbackClip.timelineStart + playbackClip.sourceStart
+    );
     if (autoplayNextRef.current) {
       autoplayNextRef.current = false;
       void previewVideoRef.current.play().catch(() => setIsPlaying(false));
@@ -1091,19 +1493,28 @@ export default function Editor() {
    * Commits a move. `newTimelineStart` is already delta-derived and snapped by
    * the drag controller, so this only persists it and repairs track ordering.
    */
-  const handleClipMove = async (clip: TimelineClip, newTimelineStart: number) => {
+  const handleClipMove = async (
+    clip: TimelineClip,
+    newTimelineStart: number
+  ) => {
     const newStart = Math.max(0, newTimelineStart);
     if (Math.abs(newStart - clip.timelineStart) < 1e-6) return; // nothing moved
 
     recordHistory("Move clip");
-    await updateClipMutation.mutateAsync({ id: clip.id, timelineStart: newStart });
+    await updateClipMutation.mutateAsync({
+      id: clip.id,
+      timelineStart: newStart,
+    });
 
     // sortIndex must follow left-to-right position, not an arbitrary increment.
     const track = timelineClips
-      .filter((c) => c.trackType === clip.trackType)
-      .map((c) => (c.id === clip.id ? { ...c, timelineStart: newStart } : c));
+      .filter(c => c.trackType === clip.trackType)
+      .map(c => (c.id === clip.id ? { ...c, timelineStart: newStart } : c));
     for (const patch of reindexTrack(track)) {
-      await updateClipMutation.mutateAsync({ id: patch.id, sortIndex: patch.sortIndex });
+      await updateClipMutation.mutateAsync({
+        id: patch.id,
+        sortIndex: patch.sortIndex,
+      });
     }
 
     await refetchClips();
@@ -1156,11 +1567,19 @@ export default function Editor() {
   };
 
   /** Edge drag for trimming. Mirrors beginClipDrag but adjusts one edge. */
-  const beginTrimDrag = (clip: TimelineClip, edge: "start" | "end", event: ReactMouseEvent) => {
+  const beginTrimDrag = (
+    clip: TimelineClip,
+    edge: "start" | "end",
+    event: ReactMouseEvent
+  ) => {
     event.stopPropagation();
     const startX = event.clientX;
     const assetDuration = assetDurationOf(clip.assetId);
-    let result = { sourceStart: clip.sourceStart, duration: clip.duration, timelineStart: clip.timelineStart };
+    let result = {
+      sourceStart: clip.sourceStart,
+      duration: clip.duration,
+      timelineStart: clip.timelineStart,
+    };
     let moved = false;
 
     const onMove = (e: MouseEvent) => {
@@ -1168,7 +1587,11 @@ export default function Editor() {
       if (!moved && Math.abs(e.clientX - startX) < 3) return;
       moved = true;
       result = resolveTrim(clip, edge, delta, assetDuration);
-      setTrimPreview({ id: clip.id, start: result.timelineStart, duration: result.duration });
+      setTrimPreview({
+        id: clip.id,
+        start: result.timelineStart,
+        duration: result.duration,
+      });
     };
 
     const onUp = () => {
@@ -1186,10 +1609,14 @@ export default function Editor() {
   const handleDuplicateClips = async (targets: TimelineClip[]) => {
     if (targets.length === 0) return;
     try {
-      recordHistory(targets.length > 1 ? `Duplicate ${targets.length} clips` : "Duplicate clip");
+      recordHistory(
+        targets.length > 1
+          ? `Duplicate ${targets.length} clips`
+          : "Duplicate clip"
+      );
       const newIds: number[] = [];
       for (const clip of targets) {
-        const track = timelineClips.filter((c) => c.trackType === clip.trackType);
+        const track = timelineClips.filter(c => c.trackType === clip.trackType);
         const created: any = await createClipMutation.mutateAsync({
           projectId: projId,
           assetId: clip.assetId,
@@ -1204,31 +1631,53 @@ export default function Editor() {
       }
       await refetchClips();
       if (newIds.length) setSelectedClipIds(newIds); // select the copies
-      toast.success(targets.length > 1 ? `${targets.length} clips duplicated` : "Clip duplicated");
+      toast.success(
+        targets.length > 1
+          ? `${targets.length} clips duplicated`
+          : "Clip duplicated"
+      );
     } catch (err) {
-      toast.error("Failed to duplicate: " + (err instanceof Error ? err.message : "Unknown error"));
+      toast.error(
+        "Failed to duplicate: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
     }
   };
 
   /** Splits the given clips at the playhead. */
   const handleSplitAtPlayhead = async (targets: TimelineClip[]) => {
     const splittable = targets
-      .map((clip) => ({ clip, offset: splitOffset(clip, currentTime) }))
-      .filter((c): c is { clip: TimelineClip; offset: number } => c.offset !== null);
+      .map(clip => ({ clip, offset: splitOffset(clip, currentTime) }))
+      .filter(
+        (c): c is { clip: TimelineClip; offset: number } => c.offset !== null
+      );
 
     if (splittable.length === 0) {
       toast.error("Move the playhead inside a clip to split it");
       return;
     }
-    recordHistory(splittable.length > 1 ? `Split ${splittable.length} clips` : "Split clip");
+    recordHistory(
+      splittable.length > 1 ? `Split ${splittable.length} clips` : "Split clip"
+    );
     try {
       for (const { clip, offset } of splittable) {
-        await splitClipMutation.mutateAsync({ id: clip.id, splitAt: offset, projectId: projId });
+        await splitClipMutation.mutateAsync({
+          id: clip.id,
+          splitAt: offset,
+          projectId: projId,
+        });
       }
       await refetchClips();
-      toast.success(splittable.length > 1 ? `${splittable.length} clips split` : "Clip split");
+      toast.success(
+        splittable.length > 1
+          ? `${splittable.length} clips split`
+          : "Clip split"
+      );
     } catch (err) {
-      toast.error("Failed to split clip: " + (err instanceof Error ? err.message : "Unknown error"));
+      toast.error(
+        "Failed to split clip: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
     }
   };
 
@@ -1238,13 +1687,20 @@ export default function Editor() {
       // A snapshot captures the whole row, so undo can re-create it verbatim.
       // The old inverse-based history only stored timelineStart and could never
       // bring a deleted clip back.
-      recordHistory(clipIds.length > 1 ? `Delete ${clipIds.length} clips` : "Delete clip");
+      recordHistory(
+        clipIds.length > 1 ? `Delete ${clipIds.length} clips` : "Delete clip"
+      );
       for (const id of clipIds) await deleteClipMutation.mutateAsync({ id });
       await refetchClips();
       setSelectedClipIds([]);
-      toast.success(clipIds.length > 1 ? `${clipIds.length} clips deleted` : "Clip deleted");
+      toast.success(
+        clipIds.length > 1 ? `${clipIds.length} clips deleted` : "Clip deleted"
+      );
     } catch (err) {
-      toast.error("Failed to delete clip: " + (err instanceof Error ? err.message : "Unknown error"));
+      toast.error(
+        "Failed to delete clip: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
     }
   };
 
@@ -1256,25 +1712,32 @@ export default function Editor() {
       await updateClipMutation.mutateAsync({ id: clip.id, muted: !clip.muted });
       await refetchClips();
     } catch (err) {
-      toast.error("Failed to update clip: " + (err instanceof Error ? err.message : "Unknown error"));
+      toast.error(
+        "Failed to update clip: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
     }
   };
 
   const handleToggleVisibility = async (clip: TimelineClip) => {
     try {
       recordHistory(clip.visible ? "Hide clip" : "Show clip");
-      await updateClipMutation.mutateAsync({ id: clip.id, visible: !clip.visible });
+      await updateClipMutation.mutateAsync({
+        id: clip.id,
+        visible: !clip.visible,
+      });
       await refetchClips();
     } catch (err) {
-      toast.error("Failed to update clip: " + (err instanceof Error ? err.message : "Unknown error"));
+      toast.error(
+        "Failed to update clip: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
     }
   };
 
-
-
   const handleTrimClip = async (
     clip: TimelineClip,
-    next: { sourceStart: number; duration: number; timelineStart: number },
+    next: { sourceStart: number; duration: number; timelineStart: number }
   ) => {
     if (
       Math.abs(next.sourceStart - clip.sourceStart) < 1e-6 &&
@@ -1294,19 +1757,29 @@ export default function Editor() {
       // A left trim also shifts the clip on the timeline; clip.trim only covers
       // the source window, so the position needs a separate write.
       if (Math.abs(next.timelineStart - clip.timelineStart) > 1e-6) {
-        await updateClipMutation.mutateAsync({ id: clip.id, timelineStart: next.timelineStart });
+        await updateClipMutation.mutateAsync({
+          id: clip.id,
+          timelineStart: next.timelineStart,
+        });
       }
       await refetchClips();
       toast.success("Clip trimmed");
     } catch (err) {
-      toast.error("Failed to trim clip: " + (err instanceof Error ? err.message : "Unknown error"));
+      toast.error(
+        "Failed to trim clip: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
     }
   };
 
   /* Keyboard shortcuts */
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      )
+        return;
       if (e.code === "Space") {
         e.preventDefault();
         togglePlay();
@@ -1326,7 +1799,7 @@ export default function Editor() {
         handleGoToStart();
       } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ" && !e.shiftKey) {
         e.preventDefault();
-        void performUndo().then((label) => {
+        void performUndo().then(label => {
           if (label) toast.info(`Undone: ${label}`);
         });
       } else if (
@@ -1334,12 +1807,14 @@ export default function Editor() {
         ((e.code === "KeyZ" && e.shiftKey) || e.code === "KeyY")
       ) {
         e.preventDefault();
-        void performRedo().then((label) => {
+        void performRedo().then(label => {
           if (label) toast.info(`Redone: ${label}`);
         });
       } else if (e.code === "KeyS" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
-        void handleSplitAtPlayhead(selectedClips.length ? selectedClips : activeClip ? [activeClip] : []);
+        void handleSplitAtPlayhead(
+          selectedClips.length ? selectedClips : activeClip ? [activeClip] : []
+        );
       } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyD") {
         e.preventDefault();
         void handleDuplicateClips(selectedClips);
@@ -1348,7 +1823,7 @@ export default function Editor() {
         void handleDeleteClips(selectedClipIds);
       } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyA") {
         e.preventDefault();
-        setSelectedClipIds(timelineClips.map((c) => c.id));
+        setSelectedClipIds(timelineClips.map(c => c.id));
       } else if (e.code === "Escape") {
         setSelectedClipIds([]);
         setClipMenu(null);
@@ -1388,7 +1863,9 @@ export default function Editor() {
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
         <div className="text-center">
           <Scissors className="w-16 h-16 text-brand-500 mx-auto mb-6" />
-          <h1 className="text-3xl font-bold text-white mb-4">Sign in to edit</h1>
+          <h1 className="text-3xl font-bold text-white mb-4">
+            Sign in to edit
+          </h1>
           <Link href="/">
             <Button className="bg-brand-500 hover:bg-brand-600 text-white h-11">
               Go to Home
@@ -1400,13 +1877,27 @@ export default function Editor() {
   }
 
   if (!Number.isInteger(projId) || projId <= 0 || projectQuery.isLoading) {
-    return <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center text-sm text-gray-300"><Loader2 className="mr-2 h-5 w-5 animate-spin" />Loading project…</div>;
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center text-sm text-gray-300">
+        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+        Loading project…
+      </div>
+    );
   }
 
   if (projectQuery.error || !project) {
     return (
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-6 text-white">
-        <div className="max-w-md text-center"><AlertTriangle className="mx-auto mb-3 h-8 w-8 text-amber-400" /><h1 className="text-xl font-semibold">Project unavailable</h1><p className="mt-2 text-sm text-gray-400">It may have been deleted, or you may not have access to it.</p><Link href="/projects"><Button className="mt-5">Back to projects</Button></Link></div>
+        <div className="max-w-md text-center">
+          <AlertTriangle className="mx-auto mb-3 h-8 w-8 text-amber-400" />
+          <h1 className="text-xl font-semibold">Project unavailable</h1>
+          <p className="mt-2 text-sm text-gray-400">
+            It may have been deleted, or you may not have access to it.
+          </p>
+          <Link href="/projects">
+            <Button className="mt-5">Back to projects</Button>
+          </Link>
+        </div>
       </div>
     );
   }
@@ -1417,27 +1908,81 @@ export default function Editor() {
       <header className="min-h-11 bg-[#0c0c12] border-b border-white/[0.07] flex items-center justify-between gap-2 px-2 sm:px-4 flex-shrink-0 z-30">
         <div className="flex min-w-0 items-center gap-1 sm:gap-3">
           <Link href="/projects">
-            <Button variant="ghost" size="sm" className="text-gray-400 hover:text-white gap-1.5 h-7 px-2 text-xs">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-gray-400 hover:text-white gap-1.5 h-7 px-2 text-xs"
+            >
               <ArrowLeft className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Back</span>
             </Button>
           </Link>
           <div className="flex items-center gap-2">
-            <span className="max-w-[120px] truncate text-white font-semibold text-xs tracking-wide sm:max-w-xs">{project.name}</span>
+            <span className="max-w-[120px] truncate text-white font-semibold text-xs tracking-wide sm:max-w-xs">
+              {project.name}
+            </span>
             <span className="text-sky-400 text-[10px] font-mono px-2 py-0.5 bg-sky-500/10 border border-sky-500/20 rounded-full">
               {project.status}
             </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {reelioMode === "cloud" ? (
+            latestServerExport?.status === "done" && latestServerExport.url ? (
+              <a
+                href={latestServerExport.url}
+                download
+                className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 sm:px-3 sm:text-xs"
+              >
+                Download MP4
+              </a>
+            ) : latestServerExport?.status === "processing" ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleCancelServerExport}
+                className="h-7 border-amber-500/30 px-2 text-[10px] text-amber-200 sm:px-3 sm:text-xs"
+              >
+                MP4 {latestServerExport.progress}% · Cancel
+              </Button>
+            ) : latestServerExport?.status === "failed" ||
+              latestServerExport?.status === "cancelled" ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleRetryServerExport}
+                disabled={retryExportMutation.isPending}
+                title={latestServerExport.errorMessage ?? undefined}
+                aria-label={`${latestServerExport.status === "failed" ? "MP4 render failed" : "MP4 render cancelled"}. Retry server render${latestServerExport.errorMessage ? `: ${latestServerExport.errorMessage}` : ""}`}
+                className="h-7 border-rose-500/30 px-2 text-[10px] text-rose-200 sm:px-3 sm:text-xs"
+              >
+                {retryExportMutation.isPending
+                  ? "Retrying…"
+                  : `MP4 ${latestServerExport.status} · Retry`}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleServerExport}
+                disabled={serverExportMutation.isPending}
+                className="h-7 border-white/15 px-2 text-[10px] sm:px-3 sm:text-xs"
+              >
+                {serverExportMutation.isPending ? "Starting…" : "Server MP4"}
+              </Button>
+            )
+          ) : null}
           <Button
             size="sm"
             onClick={handleExport}
             disabled={exporting}
             className="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white h-7 text-xs font-semibold px-4 rounded-md shadow-md shadow-sky-500/20 min-w-[80px]"
           >
-            {exporting ? `Exporting ${Math.round(exportProgress)}%` : "Export"}
+            {exporting ? `${Math.round(exportProgress)}%` : "Browser WebM"}
           </Button>
         </div>
       </header>
@@ -1463,7 +2008,14 @@ export default function Editor() {
             />
           ) : activeCategory === "videofx" ? (
             <div className="p-3 grid grid-cols-2 gap-2 overflow-y-auto no-scrollbar">
-              {["Cinematic LUT", "Vibrant HDR", "Film Grain", "Vignette Blur", "Glow Accent", "Sharpen"].map((fx, i) => {
+              {[
+                "Cinematic LUT",
+                "Vibrant HDR",
+                "Film Grain",
+                "Vignette Blur",
+                "Glow Accent",
+                "Sharpen",
+              ].map((fx, i) => {
                 const isActive = activeClip?.videoFx === fx;
                 return (
                   <button
@@ -1476,16 +2028,24 @@ export default function Editor() {
                         : "bg-[#181822] border-white/[0.08] hover:border-sky-400 text-gray-200"
                     }`}
                   >
-                    <Sparkles className={`w-5 h-5 mx-auto mb-1.5 ${isActive ? "text-sky-300" : "text-sky-400"}`} />
+                    <Sparkles
+                      className={`w-5 h-5 mx-auto mb-1.5 ${isActive ? "text-sky-300" : "text-sky-400"}`}
+                    />
                     <span className="text-xs font-medium">{fx}</span>
-                    {isActive && <div className="text-[9px] text-sky-300 font-mono mt-0.5">Applied</div>}
+                    {isActive && (
+                      <div className="text-[9px] text-sky-300 font-mono mt-0.5">
+                        Applied
+                      </div>
+                    )}
                   </button>
                 );
               })}
             </div>
           ) : activeCategory === "transcript" ? (
             <div className="p-3 space-y-2 overflow-y-auto no-scrollbar text-xs">
-              <div className="text-[11px] text-gray-400 mb-1">Click any timestamp to seek playhead:</div>
+              <div className="text-[11px] text-gray-400 mb-1">
+                Click any timestamp to seek playhead:
+              </div>
               {captions.length > 0 ? (
                 captions.map((cue, idx) => (
                   <div
@@ -1493,14 +2053,17 @@ export default function Editor() {
                     onClick={() => setCurrentTime(cue.startTime)}
                     className="p-2 rounded bg-[#181822] border border-white/[0.06] hover:border-sky-400 cursor-pointer flex items-start gap-2"
                   >
-                    <span className="text-[10px] font-mono text-sky-400 shrink-0">{formatTime(cue.startTime)}</span>
+                    <span className="text-[10px] font-mono text-sky-400 shrink-0">
+                      {formatTime(cue.startTime)}
+                    </span>
                     <span className="text-gray-300">{cue.text}</span>
                   </div>
                 ))
               ) : (
                 <div className="p-4 text-center text-gray-500">
                   <FileText className="w-6 h-6 mx-auto mb-2 opacity-50" />
-                  No transcript is available. Connect a speech-to-text provider before generating captions.
+                  No transcript is available. Connect a speech-to-text provider
+                  before generating captions.
                 </div>
               )}
             </div>
@@ -1510,21 +2073,38 @@ export default function Editor() {
               {activeClip ? (
                 <div className="space-y-3">
                   <div className="p-2.5 rounded bg-[#181822] border border-white/[0.08]">
-                    <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Clip Name</div>
-                    <div className="truncate text-xs font-medium text-sky-300" title={activeClip.assetName}>{activeClip.assetName}</div>
+                    <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">
+                      Clip Name
+                    </div>
+                    <div
+                      className="truncate text-xs font-medium text-sky-300"
+                      title={activeClip.assetName}
+                    >
+                      {activeClip.assetName}
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="p-2 rounded bg-[#181822] border border-white/[0.08]">
-                      <div className="text-[10px] text-gray-400 mb-0.5">Timeline Start</div>
-                      <div className="font-mono text-xs text-gray-200">{activeClip.timelineStart.toFixed(2)}s</div>
+                      <div className="text-[10px] text-gray-400 mb-0.5">
+                        Timeline Start
+                      </div>
+                      <div className="font-mono text-xs text-gray-200">
+                        {activeClip.timelineStart.toFixed(2)}s
+                      </div>
                     </div>
                     <div className="p-2 rounded bg-[#181822] border border-white/[0.08]">
-                      <div className="text-[10px] text-gray-400 mb-0.5">Duration</div>
-                      <div className="font-mono text-xs text-gray-200">{activeClip.duration.toFixed(2)}s</div>
+                      <div className="text-[10px] text-gray-400 mb-0.5">
+                        Duration
+                      </div>
+                      <div className="font-mono text-xs text-gray-200">
+                        {activeClip.duration.toFixed(2)}s
+                      </div>
                     </div>
                   </div>
                   <div className="p-2.5 rounded bg-[#181822] border border-white/[0.08] space-y-2">
-                    <div className="text-[10px] text-gray-400 uppercase tracking-wider">Clip Controls</div>
+                    <div className="text-[10px] text-gray-400 uppercase tracking-wider">
+                      Clip Controls
+                    </div>
                     <div className="flex items-center justify-between">
                       <span className="text-gray-300">Mute Audio</span>
                       <button
@@ -1563,7 +2143,9 @@ export default function Editor() {
                   </Button>
                 </div>
               ) : (
-                <div className="text-gray-500 text-center py-6">Select a clip on the timeline to inspect and edit properties</div>
+                <div className="text-gray-500 text-center py-6">
+                  Select a clip on the timeline to inspect and edit properties
+                </div>
               )}
             </div>
           )}
@@ -1573,27 +2155,36 @@ export default function Editor() {
         <div className="relative flex min-h-[420px] min-w-0 flex-1 flex-col items-center justify-between overflow-hidden bg-black p-2 sm:p-4">
           {/* Video Preview Canvas Viewport */}
           <div className="w-full flex-1 flex items-center justify-center relative overflow-hidden rounded-lg bg-[#050508] border border-white/[0.05]">
-            {playbackClip?.assetUrl && playbackClip.trackType === "video" && trackStates.video0?.visible !== false ? (
+            {playbackClip?.assetUrl &&
+            playbackClip.trackType === "video" &&
+            trackStates.video0?.visible !== false ? (
               <video
                 ref={previewVideoRef}
                 src={playbackClip.assetUrl}
-                muted={playbackClip.muted || isMuted || trackStates.video0?.muted === true || !((assets ?? []).find((asset) => asset.id === playbackClip.assetId)?.hasAudio)}
+                muted={
+                  playbackClip.muted ||
+                  isMuted ||
+                  trackStates.video0?.muted === true ||
+                  !(assets ?? []).find(
+                    asset => asset.id === playbackClip.assetId
+                  )?.hasAudio
+                }
                 playsInline
                 style={{
                   filter:
                     playbackClip.videoFx === "Cinematic LUT"
                       ? "contrast(1.2) saturate(1.2) brightness(0.95)"
                       : playbackClip.videoFx === "Vibrant HDR"
-                      ? "saturate(1.45) contrast(1.1) brightness(1.05)"
-                      : playbackClip.videoFx === "Film Grain"
-                      ? "contrast(1.1) sepia(0.15)"
-                      : playbackClip.videoFx === "Vignette Blur"
-                      ? "contrast(1.25)"
-                      : playbackClip.videoFx === "Glow Accent"
-                      ? "brightness(1.15) saturate(1.25)"
-                      : playbackClip.videoFx === "Sharpen"
-                      ? "contrast(1.35)"
-                      : "none",
+                        ? "saturate(1.45) contrast(1.1) brightness(1.05)"
+                        : playbackClip.videoFx === "Film Grain"
+                          ? "contrast(1.1) sepia(0.15)"
+                          : playbackClip.videoFx === "Vignette Blur"
+                            ? "contrast(1.25)"
+                            : playbackClip.videoFx === "Glow Accent"
+                              ? "brightness(1.15) saturate(1.25)"
+                              : playbackClip.videoFx === "Sharpen"
+                                ? "contrast(1.35)"
+                                : "none",
                 }}
                 className="max-w-full max-h-full object-contain transition-all"
                 onTimeUpdate={handlePreviewTimeUpdate}
@@ -1601,7 +2192,9 @@ export default function Editor() {
                 onPlay={() => setIsPlaying(true)}
                 onEnded={() => {
                   const nextClip = [...timelineClips]
-                    .filter((clip) => clip.timelineStart > playbackClip.timelineStart)
+                    .filter(
+                      clip => clip.timelineStart > playbackClip.timelineStart
+                    )
                     .sort((a, b) => a.timelineStart - b.timelineStart)[0];
                   if (nextClip?.assetUrl) {
                     const nextVideo = previewVideoRef.current;
@@ -1610,7 +2203,14 @@ export default function Editor() {
                     if (nextVideo) {
                       nextVideo.src = nextClip.assetUrl;
                       nextVideo.currentTime = nextClip.sourceStart;
-                      nextVideo.addEventListener("loadedmetadata", () => void nextVideo.play().catch(() => setIsPlaying(false)), { once: true });
+                      nextVideo.addEventListener(
+                        "loadedmetadata",
+                        () =>
+                          void nextVideo
+                            .play()
+                            .catch(() => setIsPlaying(false)),
+                        { once: true }
+                      );
                       nextVideo.load();
                     }
                   } else {
@@ -1621,18 +2221,27 @@ export default function Editor() {
             ) : (
               <div className="text-center p-6">
                 <FileVideo className="w-16 h-16 text-gray-700 mx-auto mb-3" />
-                <p className="text-gray-400 font-medium text-sm">Upload or select a video to preview</p>
-                <p className="text-gray-600 text-xs mt-1">Full-stack multi-track timeline editing</p>
+                <p className="text-gray-400 font-medium text-sm">
+                  Upload or select a video to preview
+                </p>
+                <p className="text-gray-600 text-xs mt-1">
+                  Full-stack multi-track timeline editing
+                </p>
               </div>
             )}
 
             {/* Audio elements for multi-track audio playback */}
             {timelineClips
-              .filter((clip) => clip.trackType === "audio" && clip.assetUrl && clip.visible !== false)
-              .map((clip) => (
+              .filter(
+                clip =>
+                  clip.trackType === "audio" &&
+                  clip.assetUrl &&
+                  clip.visible !== false
+              )
+              .map(clip => (
                 <audio
                   key={clip.id}
-                  ref={(node) => {
+                  ref={node => {
                     if (node) audioRefs.current.set(clip.id, node);
                     else audioRefs.current.delete(clip.id);
                   }}
@@ -1679,11 +2288,16 @@ export default function Editor() {
           onExecuteQuickAction={handleExecuteQuickAction}
           onSendMessage={handleAISendMessage}
           aiLoading={aiLoading}
+          aiPhase={aiPhase}
           pendingPlan={pendingPlan}
+          proposalProvenance={pendingProvenance}
           selectedOpIndices={selectedOpIndices}
           onToggleOpSelection={toggleOpSelection}
           onApplyPlan={handleApplyPlan}
           onRejectPlan={handleRejectPlan}
+          onCancel={handleAICancel}
+          onRetry={handleAIRetry}
+          canRetry={Boolean(lastAIInstruction)}
           aiMessages={aiMessages}
         />
       </div>
@@ -1693,17 +2307,25 @@ export default function Editor() {
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={() => {
-          void performUndo().then((label) => {
+          void performUndo().then(label => {
             if (label) toast.info(`Undone: ${label}`);
           });
         }}
         onRedo={() => {
-          void performRedo().then((label) => {
+          void performRedo().then(label => {
             if (label) toast.info(`Redone: ${label}`);
           });
         }}
         canSplit={canSplit}
-        onSplit={() => handleSplitAtPlayhead(selectedClips.length ? selectedClips : activeClip ? [activeClip] : [])}
+        onSplit={() =>
+          handleSplitAtPlayhead(
+            selectedClips.length
+              ? selectedClips
+              : activeClip
+                ? [activeClip]
+                : []
+          )
+        }
         canDelete={selectedClipIds.length > 0}
         onDelete={() => handleDeleteClips(selectedClipIds)}
         snapping={snapping}
@@ -1726,22 +2348,30 @@ export default function Editor() {
           zoomLevel={zoomLevel}
           selectedClipIds={selectedClipIds}
           onSelectClip={(id, multi) => {
-            setSelectedClipIds((prev) => (multi ? (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]) : [id]));
+            setSelectedClipIds(prev =>
+              multi
+                ? prev.includes(id)
+                  ? prev.filter(x => x !== id)
+                  : [...prev, id]
+                : [id]
+            );
           }}
-          onSeek={(time) => {
+          onSeek={time => {
             setCurrentTime(time);
             if (previewVideoRef.current) {
               const active = timelineClips.find(
-                (c) => c.timelineStart <= time && c.timelineStart + c.duration > time
+                c =>
+                  c.timelineStart <= time && c.timelineStart + c.duration > time
               );
               if (active) {
-                previewVideoRef.current.currentTime = active.sourceStart + (time - active.timelineStart);
+                previewVideoRef.current.currentTime =
+                  active.sourceStart + (time - active.timelineStart);
               }
             }
           }}
           onClipDragStart={beginClipDrag}
           onClipTrimStart={beginTrimDrag}
-          onClipDoubleClick={(clip) => handleSplitAtPlayhead([clip])}
+          onClipDoubleClick={clip => handleSplitAtPlayhead([clip])}
           onClipContextMenu={(clip, e) => {
             setSelectedClipIds([clip.id]);
             setClipMenu({ clipId: clip.id, x: e.clientX, y: e.clientY });
@@ -1761,16 +2391,21 @@ export default function Editor() {
       {/* Right-click actions for the clip under the cursor. */}
       {clipMenu && (
         <>
-          <div className="fixed inset-0 z-[90]" onMouseDown={() => setClipMenu(null)} />
+          <div
+            className="fixed inset-0 z-[90]"
+            onMouseDown={() => setClipMenu(null)}
+          />
           <div
             data-testid="clip-context-menu"
             className="fixed z-[100] min-w-[176px] rounded-lg border border-white/10 bg-[#141420] py-1 shadow-xl text-xs"
             style={{ left: clipMenu.x, top: clipMenu.y }}
           >
             {(() => {
-              const clip = timelineClips.find((c) => c.id === clipMenu.clipId);
+              const clip = timelineClips.find(c => c.id === clipMenu.clipId);
               if (!clip) return null;
-              const targets = selectedClipIds.includes(clip.id) ? selectedClips : [clip];
+              const targets = selectedClipIds.includes(clip.id)
+                ? selectedClips
+                : [clip];
               const splittable = splitOffset(clip, currentTime) !== null;
               const item =
                 "w-full px-3 py-1.5 text-left text-xs text-gray-300 hover:bg-white/5 hover:text-white flex items-center gap-2 disabled:text-gray-600 disabled:hover:bg-transparent";
@@ -1780,7 +2415,11 @@ export default function Editor() {
                     data-testid="menu-split"
                     className={item}
                     disabled={!splittable}
-                    title={splittable ? "" : "Move the playhead inside this clip first"}
+                    title={
+                      splittable
+                        ? ""
+                        : "Move the playhead inside this clip first"
+                    }
                     onClick={() => {
                       setClipMenu(null);
                       void handleSplitAtPlayhead(targets);
@@ -1805,7 +2444,11 @@ export default function Editor() {
                       void handleToggleMute(clip);
                     }}
                   >
-                    {clip.muted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                    {clip.muted ? (
+                      <VolumeX className="w-3 h-3" />
+                    ) : (
+                      <Volume2 className="w-3 h-3" />
+                    )}
                     {clip.muted ? "Unmute" : "Mute"}
                   </button>
                   <button
@@ -1815,7 +2458,11 @@ export default function Editor() {
                       void handleToggleVisibility(clip);
                     }}
                   >
-                    {clip.visible ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    {clip.visible ? (
+                      <ChevronUp className="w-3 h-3" />
+                    ) : (
+                      <ChevronDown className="w-3 h-3" />
+                    )}
                     {clip.visible ? "Hide" : "Show"}
                   </button>
                   <div className="my-1 h-px bg-white/10" />
@@ -1824,7 +2471,7 @@ export default function Editor() {
                     className={`${item} hover:text-red-400`}
                     onClick={() => {
                       setClipMenu(null);
-                      void handleDeleteClips(targets.map((c) => c.id));
+                      void handleDeleteClips(targets.map(c => c.id));
                     }}
                   >
                     <Trash2 className="w-3 h-3" /> Delete
@@ -1838,4 +2485,3 @@ export default function Editor() {
     </div>
   );
 }
-

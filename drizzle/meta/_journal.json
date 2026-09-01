@@ -15,6 +15,13 @@
       "when": 1788168576869,
       "tag": "0001_eager_vindicator",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1788190555305,
+      "tag": "0002_cold_owl",
+      "breakpoints": true
     }
   ]
 }

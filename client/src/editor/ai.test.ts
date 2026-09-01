@@ -16,4 +16,30 @@ describe("editor AI planner", () => {
     const plan = planEditorRequest("Make it cinematic.", []);
     expect(plan.operations).toEqual([]);
   });
+
+  it("proposes a selected-clip playhead split in guest mode", () => {
+    const plan = planEditorRequest(
+      "Split the selected clip at the playhead.",
+      [
+        {
+          id: 4,
+          assetId: 1,
+          trackId: 0,
+          trackType: "video",
+          sourceStart: 0,
+          duration: 10,
+          timelineStart: 0,
+          sortIndex: 0,
+          locked: false,
+          visible: true,
+          muted: false,
+        },
+      ],
+      [],
+      { playhead: 3, selectedClipIds: [4] }
+    );
+    expect(plan.operations).toEqual([
+      { type: "splitClip", clipId: 4, atTime: 3 },
+    ]);
+  });
 });

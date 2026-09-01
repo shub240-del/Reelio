@@ -1,6 +1,31 @@
 import { z } from "zod";
 import { notifyOwner } from "./notification";
 import { adminProcedure, publicProcedure, router } from "./trpc";
+import { ENV } from "./env";
+import { getAIProvider } from "./nvidia";
+import { checkDatabaseConnection } from "../db";
+import { checkFfmpegAvailable } from "../renderExport";
+
+export async function getReadinessStatus() {
+  const checks = {
+    databaseConfigured: Boolean(ENV.databaseUrl),
+    databaseReachable: false,
+    oauthConfigured: Boolean(
+      ENV.appId && ENV.oAuthServerUrl && ENV.cookieSecret.length >= 32
+    ),
+    storageConfigured: Boolean(ENV.forgeApiUrl && ENV.forgeApiKey),
+    aiProviderConfigured: getAIProvider().isAvailable(),
+    ffmpegAvailable: false,
+  };
+  checks.databaseReachable = checks.databaseConfigured
+    ? await checkDatabaseConnection()
+    : false;
+  checks.ffmpegAvailable = await checkFfmpegAvailable();
+  return {
+    ready: Object.values(checks).every(Boolean),
+    checks,
+  };
+}
 
 export const systemRouter = router({
   health: publicProcedure
@@ -11,7 +36,10 @@ export const systemRouter = router({
     )
     .query(() => ({
       ok: true,
+      service: "reelio",
     })),
+
+  readiness: publicProcedure.query(() => getReadinessStatus()),
 
   notifyOwner: adminProcedure
     .input(

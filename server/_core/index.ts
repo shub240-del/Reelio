@@ -11,6 +11,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { assertServerConfiguration } from "./env";
+import { getReadinessStatus } from "./systemRouter";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -51,6 +52,13 @@ async function startServer() {
 
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  app.get("/healthz", (_req, res) => {
+    res.json({ ok: true, service: "reelio" });
+  });
+  app.get("/readyz", async (_req, res) => {
+    const readiness = await getReadinessStatus();
+    res.status(readiness.ready ? 200 : 503).json(readiness);
+  });
   // tRPC API
   app.use(
     "/api/trpc",
@@ -78,7 +86,7 @@ async function startServer() {
   });
 }
 
-startServer().catch((error) => {
+startServer().catch(error => {
   console.error(error);
   process.exitCode = 1;
 });

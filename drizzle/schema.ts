@@ -7,6 +7,7 @@ import {
   mysqlTable,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from "drizzle-orm/mysql-core";
 
@@ -32,7 +33,9 @@ export const projects = mysqlTable("projects", {
   userId: int("userId").notNull(),
   name: varchar("name", { length: 256 }).notNull(),
   description: text("description"),
-  status: mysqlEnum("status", ["draft", "editing", "exporting", "done"]).default("draft").notNull(),
+  status: mysqlEnum("status", ["draft", "editing", "exporting", "done"])
+    .default("draft")
+    .notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -69,7 +72,9 @@ export const clips = mysqlTable("clips", {
   projectId: int("projectId").notNull(),
   assetId: int("assetId").notNull(),
   trackId: int("trackId").notNull().default(0),
-  trackType: mysqlEnum("trackType", ["video", "audio"]).default("video").notNull(),
+  trackType: mysqlEnum("trackType", ["video", "audio"])
+    .default("video")
+    .notNull(),
   sourceStart: double("sourceStart").notNull(),
   duration: double("duration").notNull(),
   timelineStart: double("timelineStart").notNull(),
@@ -122,10 +127,49 @@ export const exports = mysqlTable("exports", {
   resolution: varchar("resolution", { length: 32 }).notNull(),
   format: varchar("format", { length: 16 }).default("mp4").notNull(),
   duration: double("duration").notNull(),
-  status: mysqlEnum("status", ["processing", "done", "failed"]).default("processing").notNull(),
+  status: mysqlEnum("status", ["processing", "done", "failed", "cancelled"])
+    .default("processing")
+    .notNull(),
+  progress: int("progress").default(0).notNull(),
   errorMessage: text("errorMessage"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export type ExportRow = typeof exports.$inferSelect;
 export type InsertExport = typeof exports.$inferInsert;
+
+/* ─── AI edit proposals ─── */
+export const aiEditProposals = mysqlTable(
+  "ai_edit_proposals",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    requestId: varchar("requestId", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    userId: int("userId").notNull(),
+    instructionHash: varchar("instructionHash", { length: 64 }).notNull(),
+    baseRevision: varchar("baseRevision", { length: 64 }).notNull(),
+    planJson: text("planJson").notNull(),
+    provenanceJson: text("provenanceJson").notNull(),
+    provider: varchar("provider", { length: 64 }).notNull(),
+    status: mysqlEnum("status", [
+      "pending",
+      "applied",
+      "rejected",
+      "cancelled",
+      "no_action",
+    ])
+      .default("pending")
+      .notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    uniqueIndex("ai_edit_proposals_user_request_unique").on(
+      table.userId,
+      table.requestId
+    ),
+  ]
+);
+
+export type AIEditProposalRow = typeof aiEditProposals.$inferSelect;
+export type InsertAIEditProposal = typeof aiEditProposals.$inferInsert;

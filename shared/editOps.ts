@@ -21,10 +21,24 @@ import {
   type TimelineClip,
 } from "./timeline";
 
-const timeRange = z.object({
-  start: z.number().min(0),
-  end: z.number().min(0),
-});
+const timeRange = z
+  .object({
+    start: z.number().finite().min(0),
+    end: z.number().finite().min(0),
+  })
+  .refine(range => range.end > range.start, {
+    message: "Range end must be after its start",
+    path: ["end"],
+  });
+
+export const SUPPORTED_VIDEO_EFFECTS = [
+  "Cinematic LUT",
+  "Vibrant HDR",
+  "Film Grain",
+  "Vignette Blur",
+  "Glow Accent",
+  "Sharpen",
+] as const;
 
 export const captionCueSchema = z.object({
   text: z.string().min(1).max(500),
@@ -82,6 +96,11 @@ export const editOpSchema = z.discriminatedUnion("type", [
     muted: z.boolean().optional(),
     locked: z.boolean().optional(),
   }),
+  z.object({
+    type: z.literal("setVideoEffect"),
+    clipId: z.number().int().positive(),
+    effect: z.enum(SUPPORTED_VIDEO_EFFECTS).nullable(),
+  }),
   /** Keep only these spans; the inverse of removeRanges. Highlight reels. */
   z.object({
     type: z.literal("keepRanges"),
@@ -127,6 +146,7 @@ const TIMELINE_OPS: ReadonlySet<string> = new Set([
   "trimClip",
   "moveClip",
   "setClipProps",
+  "setVideoEffect",
   "keepRanges",
 ]);
 
@@ -154,14 +174,14 @@ export interface ApplyResult {
 export function applyEditOps(
   clips: TimelineClip[],
   assets: AssetMap,
-  ops: EditOp[],
+  ops: EditOp[]
 ): ApplyResult {
   let current = normalizeTimeline(clips, assets);
   const sideEffects: EditOp[] = [];
   const applied: EditOp[] = [];
   const skipped: { op: EditOp; reason: string }[] = [];
 
-  const exists = (id: number) => current.some((c) => c.id === id);
+  const exists = (id: number) => current.some(c => c.id === id);
 
   for (const op of ops) {
     if (!isTimelineOp(op)) {
@@ -178,7 +198,7 @@ export function applyEditOps(
 
       case "keepRanges": {
         const total = timelineDuration(current);
-        const keep = op.ranges.filter((r) => r.end > r.start);
+        const keep = op.ranges.filter(r => r.end > r.start);
         if (keep.length === 0) {
           skipped.push({ op, reason: "no usable ranges" });
           continue;
@@ -217,7 +237,9 @@ export function applyEditOps(
           skipped.push({ op, reason: "no such clip" });
           continue;
         }
-        current = trimClip(current, assets, op.clipId, op.edge, op.toTime, { ripple: op.ripple });
+        current = trimClip(current, assets, op.clipId, op.edge, op.toTime, {
+          ripple: op.ripple,
+        });
         break;
 
       case "moveClip":
@@ -230,7 +252,7 @@ export function applyEditOps(
           assets,
           op.clipId,
           { trackId: op.trackId, timelineStart: op.timelineStart },
-          { ripple: op.ripple },
+          { ripple: op.ripple }
         );
         break;
 
@@ -239,11 +261,31 @@ export function applyEditOps(
           skipped.push({ op, reason: "no such clip" });
           continue;
         }
-        const props: Partial<Pick<TimelineClip, "locked" | "visible" | "muted">> = {};
+        const props: Partial<
+          Pick<TimelineClip, "locked" | "visible" | "muted">
+        > = {};
         if (op.visible !== undefined) props.visible = op.visible;
         if (op.muted !== undefined) props.muted = op.muted;
         if (op.locked !== undefined) props.locked = op.locked;
         current = setClipProps(current, assets, op.clipId, props);
+        break;
+      }
+
+      case "setVideoEffect": {
+        const clip = current.find(candidate => candidate.id === op.clipId);
+        if (!clip || clip.trackType !== "video") {
+          skipped.push({ op, reason: "no such video clip" });
+          continue;
+        }
+        if (clip.videoFx === op.effect) {
+          skipped.push({ op, reason: "effect is already applied" });
+          continue;
+        }
+        current = current.map(candidate =>
+          candidate.id === op.clipId
+            ? { ...candidate, videoFx: op.effect }
+            : candidate
+        );
         break;
       }
     }
@@ -261,18 +303,22 @@ function invert(keep: { start: number; end: number }[], total: number) {
   const out: { start: number; end: number }[] = [];
   let cursor = 0;
   for (const r of sorted) {
-    if (r.start > cursor) out.push({ start: cursor, end: Math.min(r.start, total) });
+    if (r.start > cursor)
+      out.push({ start: cursor, end: Math.min(r.start, total) });
     cursor = Math.max(cursor, r.end);
   }
   if (cursor < total) out.push({ start: cursor, end: total });
-  return out.filter((r) => r.end > r.start);
+  return out.filter(r => r.end > r.start);
 }
 
 /** One-line description of a plan, for the AI panel and the undo history label. */
 export function describeOp(op: EditOp): string {
   switch (op.type) {
     case "removeRanges": {
-      const secs = op.ranges.reduce((n, r) => n + Math.max(0, r.end - r.start), 0);
+      const secs = op.ranges.reduce(
+        (n, r) => n + Math.max(0, r.end - r.start),
+        0
+      );
       return `Remove ${op.ranges.length} span${op.ranges.length === 1 ? "" : "s"} (${secs.toFixed(1)}s)`;
     }
     case "keepRanges":
@@ -287,6 +333,8 @@ export function describeOp(op: EditOp): string {
       return `Move clip to ${op.timelineStart.toFixed(2)}s`;
     case "setClipProps":
       return "Change clip properties";
+    case "setVideoEffect":
+      return op.effect ? `Apply ${op.effect}` : "Remove video effect";
     case "addCaptions":
       return `Add ${op.cues.length} caption${op.cues.length === 1 ? "" : "s"}`;
     case "addMarkers":
@@ -312,13 +360,17 @@ export interface ReviewRangeHighlight {
  * Extracts affected timeline time ranges for an operation, used by AI Review Mode
  * to draw visual overlay stripes directly on the timeline ruler/tracks.
  */
-export function getAffectedRanges(op: EditOp, clips: TimelineClip[]): ReviewRangeHighlight[] {
+export function getAffectedRanges(
+  op: EditOp,
+  clips: TimelineClip[]
+): ReviewRangeHighlight[] {
   switch (op.type) {
     case "removeRanges":
       return op.ranges.map((r, idx) => ({
         start: r.start,
         end: r.end,
-        label: op.reason || `Cut #${idx + 1} (${(r.end - r.start).toFixed(1)}s)`,
+        label:
+          op.reason || `Cut #${idx + 1} (${(r.end - r.start).toFixed(1)}s)`,
         type: "remove",
       }));
 
@@ -326,14 +378,15 @@ export function getAffectedRanges(op: EditOp, clips: TimelineClip[]): ReviewRang
       return op.ranges.map((r, idx) => ({
         start: r.start,
         end: r.end,
-        label: op.reason || `Keep #${idx + 1} (${(r.end - r.start).toFixed(1)}s)`,
+        label:
+          op.reason || `Keep #${idx + 1} (${(r.end - r.start).toFixed(1)}s)`,
         type: "keep",
       }));
 
     case "removeClips": {
       const highlights: ReviewRangeHighlight[] = [];
       for (const id of op.clipIds) {
-        const c = clips.find((clip) => clip.id === id);
+        const c = clips.find(clip => clip.id === id);
         if (c) {
           highlights.push({
             start: c.timelineStart,
@@ -347,7 +400,7 @@ export function getAffectedRanges(op: EditOp, clips: TimelineClip[]): ReviewRang
     }
 
     case "splitClip": {
-      const c = clips.find((clip) => clip.id === op.clipId);
+      const c = clips.find(clip => clip.id === op.clipId);
       if (c) {
         return [
           {
@@ -362,7 +415,7 @@ export function getAffectedRanges(op: EditOp, clips: TimelineClip[]): ReviewRang
     }
 
     case "trimClip": {
-      const c = clips.find((clip) => clip.id === op.clipId);
+      const c = clips.find(clip => clip.id === op.clipId);
       if (c) {
         if (op.edge === "start") {
           return [

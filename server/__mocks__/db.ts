@@ -24,6 +24,8 @@ import type {
   Marker,
   User,
   Project,
+  AIEditProposalRow,
+  InsertAIEditProposal,
 } from "../../drizzle/schema";
 
 /* ─── In-memory stores ─── */
@@ -39,6 +41,7 @@ const store = {
   markers: new Map<number, Marker>(),
   captions: new Map<number, Caption>(),
   exports: new Map<number, ExportRow>(),
+  aiEditProposals: new Map<string, AIEditProposalRow>(),
 };
 
 /** Reset all in-memory tables between tests. Call from beforeEach/afterEach. */
@@ -52,10 +55,16 @@ export async function getDb() {
   return null;
 }
 
+export async function checkDatabaseConnection() {
+  return false;
+}
+
 /* ─── User helpers ─── */
 
 export async function upsertUser(user: InsertUser): Promise<void> {
-  const existing = [...store.users.values()].find((u) => u.openId === user.openId);
+  const existing = [...store.users.values()].find(
+    u => u.openId === user.openId
+  );
   if (existing) {
     Object.assign(existing, user);
   } else {
@@ -74,8 +83,10 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   }
 }
 
-export async function getUserByOpenId(openId: string): Promise<User | undefined> {
-  return [...store.users.values()].find((u) => u.openId === openId);
+export async function getUserByOpenId(
+  openId: string
+): Promise<User | undefined> {
+  return [...store.users.values()].find(u => u.openId === openId);
 }
 
 /* ─── Project helpers ─── */
@@ -83,7 +94,7 @@ export async function getUserByOpenId(openId: string): Promise<User | undefined>
 export async function createProject(
   userId: number,
   name: string,
-  description?: string | null,
+  description?: string | null
 ): Promise<Project> {
   const id = autoId();
   const row: Project = {
@@ -101,11 +112,14 @@ export async function createProject(
 
 export async function getUserProjects(userId: number): Promise<Project[]> {
   return [...store.projects.values()]
-    .filter((p) => p.userId === userId)
+    .filter(p => p.userId === userId)
     .sort((a, b) => +b.updatedAt - +a.updatedAt);
 }
 
-export async function getProject(id: number, userId: number): Promise<Project | undefined> {
+export async function getProject(
+  id: number,
+  userId: number
+): Promise<Project | undefined> {
   const p = store.projects.get(id);
   return p && p.userId === userId ? p : undefined;
 }
@@ -115,7 +129,7 @@ export async function updateProject(
   userId: number,
   name?: string,
   status?: string,
-  description?: string,
+  description?: string | null
 ): Promise<void> {
   const row = store.projects.get(id);
   if (!row || row.userId !== userId) return;
@@ -128,35 +142,67 @@ export async function updateProject(
 export async function duplicateProject(
   id: number,
   userId: number,
-  name?: string,
+  name?: string
 ): Promise<Project | undefined> {
   const source = await getProject(id, userId);
   if (!source) return undefined;
-  const copy = await createProject(userId, name ?? `${source.name} Copy`, source.description ?? undefined);
+  const copy = await createProject(
+    userId,
+    name ?? `${source.name} Copy`,
+    source.description ?? undefined
+  );
   const assetIds = new Map<number, number>();
   for (const asset of await getProjectAssets(id)) {
-    const cloned = await createAsset({ ...asset, id: undefined, projectId: copy.id } as unknown as InsertAsset);
+    const cloned = await createAsset({
+      ...asset,
+      id: undefined,
+      projectId: copy.id,
+    } as unknown as InsertAsset);
     assetIds.set(asset.id, cloned.id);
   }
   for (const clip of await getProjectClips(id)) {
-    await createClip({ ...clip, id: undefined, projectId: copy.id, assetId: assetIds.get(clip.assetId) ?? clip.assetId } as unknown as InsertClip);
+    await createClip({
+      ...clip,
+      id: undefined,
+      projectId: copy.id,
+      assetId: assetIds.get(clip.assetId) ?? clip.assetId,
+    } as unknown as InsertClip);
   }
   for (const marker of await getProjectMarkers(id)) {
-    await createMarker({ ...marker, id: undefined, projectId: copy.id } as unknown as InsertMarker);
+    await createMarker({
+      ...marker,
+      id: undefined,
+      projectId: copy.id,
+    } as unknown as InsertMarker);
   }
   for (const caption of await getProjectCaptions(id)) {
-    await createCaption({ ...caption, id: undefined, projectId: copy.id, assetId: assetIds.get(caption.assetId) ?? caption.assetId } as unknown as InsertCaption);
+    await createCaption({
+      ...caption,
+      id: undefined,
+      projectId: copy.id,
+      assetId: assetIds.get(caption.assetId) ?? caption.assetId,
+    } as unknown as InsertCaption);
   }
   return copy;
 }
 
 export async function deleteProject(id: number, userId: number): Promise<void> {
   const row = store.projects.get(id);
-  if (!row || row.userId !== userId) throw new Error("Project not found or unauthorized");
-  for (const table of [store.assets, store.clips, store.markers, store.captions, store.exports]) {
+  if (!row || row.userId !== userId)
+    throw new Error("Project not found or unauthorized");
+  for (const table of [
+    store.assets,
+    store.clips,
+    store.markers,
+    store.captions,
+    store.exports,
+  ]) {
     for (const [rowId, value] of table as Map<number, { projectId: number }>) {
       if (value.projectId === id) table.delete(rowId);
     }
+  }
+  for (const [proposalId, proposal] of store.aiEditProposals) {
+    if (proposal.projectId === id) store.aiEditProposals.delete(proposalId);
   }
   store.projects.delete(id);
 }
@@ -189,7 +235,7 @@ export async function createAsset(data: InsertAsset): Promise<Asset> {
 
 export async function getProjectAssets(projectId: number): Promise<Asset[]> {
   return [...store.assets.values()]
-    .filter((a) => a.projectId === projectId)
+    .filter(a => a.projectId === projectId)
     .sort((a, b) => +a.createdAt - +b.createdAt);
 }
 
@@ -197,8 +243,15 @@ export async function getAsset(id: number): Promise<Asset | undefined> {
   return store.assets.get(id);
 }
 
-export async function isStorageKeyReferenced(storageKey: string): Promise<boolean> {
-  return [...store.assets.values()].some((asset) => asset.storageKey === storageKey);
+export async function isStorageKeyReferenced(
+  storageKey: string
+): Promise<boolean> {
+  return (
+    [...store.assets.values()].some(asset => asset.storageKey === storageKey) ||
+    [...store.exports.values()].some(
+      exportRow => exportRow.storageKey === storageKey
+    )
+  );
 }
 
 export async function deleteAsset(id: number, userId: number): Promise<void> {
@@ -244,11 +297,14 @@ export async function createClip(data: InsertClip): Promise<Clip> {
 
 export async function getProjectClips(projectId: number): Promise<Clip[]> {
   return [...store.clips.values()]
-    .filter((c) => c.projectId === projectId)
+    .filter(c => c.projectId === projectId)
     .sort((a, b) => a.sortIndex - b.sortIndex);
 }
 
-export async function updateClip(id: number, updates: Partial<InsertClip>): Promise<void> {
+export async function updateClip(
+  id: number,
+  updates: Partial<InsertClip>
+): Promise<void> {
   const row = store.clips.get(id);
   if (!row) return;
   const fields = [
@@ -261,6 +317,8 @@ export async function updateClip(id: number, updates: Partial<InsertClip>): Prom
     "locked",
     "visible",
     "muted",
+    "videoFx",
+    "transition",
   ] as const;
   for (const key of fields) {
     const val = updates[key];
@@ -324,7 +382,45 @@ export async function batchCommitTimeline(
   return getProjectClips(projectId);
 }
 
-export async function trimClip(id: number, sourceStart: number, duration: number): Promise<void> {
+export async function commitAIProposalTimeline(
+  proposalId: string,
+  projectId: number,
+  userId: number,
+  expectedRevision: string,
+  revisionOf: (clipRows: Clip[], assetRows: Asset[]) => string,
+  ops: {
+    creates: InsertClip[];
+    updates: Array<{ id: number; patch: Partial<InsertClip> }>;
+    deletes: number[];
+  }
+): Promise<{ alreadyApplied: boolean }> {
+  const proposal = store.aiEditProposals.get(proposalId);
+  if (!proposal || proposal.userId !== userId)
+    throw new Error("AI proposal not found.");
+  if (proposal.status === "applied") return { alreadyApplied: true };
+  if (proposal.status !== "pending")
+    throw new Error(`AI proposal is ${proposal.status}.`);
+  const project = store.projects.get(projectId);
+  if (!project || project.userId !== userId)
+    throw new Error("Project not found or not owned by this user.");
+  const clipRows = await getProjectClips(projectId);
+  const assetRows = await getProjectAssets(projectId);
+  if (revisionOf(clipRows, assetRows) !== expectedRevision) {
+    throw new Error(
+      "The timeline changed after this proposal was created. Generate a new proposal."
+    );
+  }
+  await batchCommitTimeline(projectId, userId, ops);
+  proposal.status = "applied";
+  proposal.updatedAt = new Date();
+  return { alreadyApplied: false };
+}
+
+export async function trimClip(
+  id: number,
+  sourceStart: number,
+  duration: number
+): Promise<void> {
   const row = store.clips.get(id);
   if (!row) throw new Error("Clip not found");
   row.sourceStart = sourceStart;
@@ -334,11 +430,12 @@ export async function trimClip(id: number, sourceStart: number, duration: number
 export async function splitClip(
   id: number,
   splitAt: number,
-  userId: number,
+  userId: number
 ): Promise<{ newClipId: number }> {
   const clip = store.clips.get(id);
   if (!clip) throw new Error("Clip not found");
-  if (splitAt <= 0 || splitAt >= clip.duration) throw new Error("splitAt is outside clip duration");
+  if (splitAt <= 0 || splitAt >= clip.duration)
+    throw new Error("splitAt is outside clip duration");
   const project = store.projects.get(clip.projectId);
   if (!project || project.userId !== userId) throw new Error("Unauthorized");
 
@@ -375,7 +472,7 @@ export async function createMarker(data: InsertMarker): Promise<Marker> {
 
 export async function getProjectMarkers(projectId: number): Promise<Marker[]> {
   return [...store.markers.values()]
-    .filter((m) => m.projectId === projectId)
+    .filter(m => m.projectId === projectId)
     .sort((a, b) => a.time - b.time);
 }
 
@@ -404,15 +501,17 @@ export async function createCaption(data: InsertCaption): Promise<Caption> {
   return row;
 }
 
-export async function getProjectCaptions(projectId: number): Promise<Caption[]> {
+export async function getProjectCaptions(
+  projectId: number
+): Promise<Caption[]> {
   return [...store.captions.values()]
-    .filter((c) => c.projectId === projectId)
+    .filter(c => c.projectId === projectId)
     .sort((a, b) => a.startTime - b.startTime);
 }
 
 export async function getAssetCaptions(assetId: number): Promise<Caption[]> {
   return [...store.captions.values()]
-    .filter((c) => c.assetId === assetId)
+    .filter(c => c.assetId === assetId)
     .sort((a, b) => a.startTime - b.startTime);
 }
 
@@ -434,6 +533,7 @@ export async function createExport(data: InsertExport): Promise<ExportRow> {
     format: (data.format ?? "mp4") as ExportRow["format"],
     duration: data.duration,
     status: (data.status ?? "processing") as ExportRow["status"],
+    progress: data.progress ?? 0,
     errorMessage: data.errorMessage ?? null,
     createdAt: new Date(),
   };
@@ -441,9 +541,11 @@ export async function createExport(data: InsertExport): Promise<ExportRow> {
   return row;
 }
 
-export async function getProjectExports(projectId: number): Promise<ExportRow[]> {
+export async function getProjectExports(
+  projectId: number
+): Promise<ExportRow[]> {
   return [...store.exports.values()]
-    .filter((e) => e.projectId === projectId)
+    .filter(e => e.projectId === projectId)
     .sort((a, b) => +b.createdAt - +a.createdAt);
 }
 
@@ -453,10 +555,84 @@ export async function getExport(id: number): Promise<ExportRow | undefined> {
 
 export async function updateExport(
   id: number,
-  updates: { status?: string; errorMessage?: string },
+  updates: {
+    status?: "processing" | "done" | "failed" | "cancelled";
+    errorMessage?: string | null;
+    progress?: number;
+    storageKey?: string;
+    url?: string;
+    duration?: number;
+  }
 ): Promise<void> {
   const row = store.exports.get(id);
   if (!row) return;
-  if (updates.status !== undefined) row.status = updates.status as ExportRow["status"];
-  if (updates.errorMessage !== undefined) row.errorMessage = updates.errorMessage;
+  if (updates.status !== undefined) row.status = updates.status;
+  if (updates.errorMessage !== undefined)
+    row.errorMessage = updates.errorMessage;
+  if (updates.progress !== undefined) row.progress = updates.progress;
+  if (updates.storageKey !== undefined) row.storageKey = updates.storageKey;
+  if (updates.url !== undefined) row.url = updates.url;
+  if (updates.duration !== undefined) row.duration = updates.duration;
+}
+
+/* ─── AI proposal helpers ─── */
+export async function createAIEditProposal(
+  data: InsertAIEditProposal
+): Promise<AIEditProposalRow> {
+  const row: AIEditProposalRow = {
+    id: data.id,
+    requestId: data.requestId,
+    projectId: data.projectId,
+    userId: data.userId,
+    instructionHash: data.instructionHash,
+    baseRevision: data.baseRevision,
+    planJson: data.planJson,
+    provenanceJson: data.provenanceJson,
+    provider: data.provider,
+    status: data.status ?? "pending",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  store.aiEditProposals.set(row.id, row);
+  return row;
+}
+
+export async function getAIEditProposal(id: string, userId: number) {
+  const row = store.aiEditProposals.get(id);
+  return row?.userId === userId ? row : undefined;
+}
+
+export async function getAIEditProposalByRequest(
+  userId: number,
+  requestId: string
+) {
+  return [...store.aiEditProposals.values()].find(
+    row => row.userId === userId && row.requestId === requestId
+  );
+}
+
+export async function getLatestPendingAIEditProposal(
+  projectId: number,
+  userId: number
+) {
+  return [...store.aiEditProposals.values()]
+    .filter(
+      row =>
+        row.projectId === projectId &&
+        row.userId === userId &&
+        row.status === "pending"
+    )
+    .sort((a, b) => +b.createdAt - +a.createdAt)[0];
+}
+
+export async function updateAIEditProposalStatus(
+  id: string,
+  userId: number,
+  status: AIEditProposalRow["status"]
+) {
+  const row = await getAIEditProposal(id, userId);
+  if (row) {
+    row.status = status;
+    row.updatedAt = new Date();
+  }
 }

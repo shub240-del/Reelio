@@ -20,7 +20,7 @@ function appendHashSuffix(relKey: string): string {
 export async function storagePut(
   relKey: string,
   data: Buffer | Uint8Array | string,
-  contentType = "application/octet-stream",
+  contentType = "application/octet-stream"
 ): Promise<{ key: string; url: string }> {
   const key = appendHashSuffix(normalizeKey(relKey));
   const forgeUrl = ENV.forgeApiUrl;
@@ -28,7 +28,10 @@ export async function storagePut(
 
   if (forgeUrl && forgeKey) {
     // 1. Get presigned PUT URL from Forge
-    const presignUrl = new URL("v1/storage/presign/put", forgeUrl.replace(/\/+$/, "") + "/");
+    const presignUrl = new URL(
+      "v1/storage/presign/put",
+      forgeUrl.replace(/\/+$/, "") + "/"
+    );
     presignUrl.searchParams.set("path", key);
 
     const presignResp = await fetch(presignUrl, {
@@ -73,14 +76,16 @@ export async function storagePut(
     const buffer = Buffer.isBuffer(data)
       ? data
       : typeof data === "string"
-      ? Buffer.from(data)
-      : Buffer.from(data);
+        ? Buffer.from(data)
+        : Buffer.from(data);
     await fs.promises.writeFile(filePath, buffer);
     return { key, url: `/uploads/${cleanFileName}` };
   }
 }
 
-export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {
+export async function storageGet(
+  relKey: string
+): Promise<{ key: string; url: string }> {
   const key = normalizeKey(relKey);
   return { key, url: `/manus-storage/${key}` };
 }
@@ -94,7 +99,10 @@ export async function storageGetSignedUrl(relKey: string): Promise<string> {
     return `/uploads/${path.basename(key)}`;
   }
 
-  const getUrl = new URL("v1/storage/presign/get", forgeUrl.replace(/\/+$/, "") + "/");
+  const getUrl = new URL(
+    "v1/storage/presign/get",
+    forgeUrl.replace(/\/+$/, "") + "/"
+  );
   getUrl.searchParams.set("path", key);
 
   const resp = await fetch(getUrl, {
@@ -110,6 +118,43 @@ export async function storageGetSignedUrl(relKey: string): Promise<string> {
   return url;
 }
 
+/** Materialize one owned storage object for a bounded server-side operation. */
+export async function storageReadToFile(
+  relKey: string,
+  destination: string,
+  options: { maxBytes: number; signal?: AbortSignal }
+): Promise<number> {
+  const key = normalizeKey(relKey);
+  if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
+    const source = path.join(
+      path.resolve(process.cwd(), ".reelio", "uploads"),
+      path.basename(key)
+    );
+    const stats = await fs.promises.stat(source);
+    if (!stats.isFile() || stats.size > options.maxBytes) {
+      throw new Error("Source media exceeds the render size limit.");
+    }
+    if (options.signal?.aborted) throw new Error("Render cancelled.");
+    await fs.promises.copyFile(source, destination);
+    return stats.size;
+  }
+
+  const signedUrl = await storageGetSignedUrl(key);
+  const response = await fetch(signedUrl, { signal: options.signal });
+  if (!response.ok)
+    throw new Error(`Storage read failed with HTTP ${response.status}.`);
+  const declaredSize = Number(response.headers.get("content-length") || 0);
+  if (declaredSize > options.maxBytes) {
+    throw new Error("Source media exceeds the render size limit.");
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > options.maxBytes) {
+    throw new Error("Source media exceeds the render size limit.");
+  }
+  await fs.promises.writeFile(destination, bytes);
+  return bytes.length;
+}
+
 /**
  * Delete a locally stored object. The configured Forge API currently exposes
  * only presigned reads/writes, so cloud deletion must be handled by that
@@ -120,7 +165,7 @@ export async function storageDelete(relKey: string): Promise<boolean> {
 
   const filePath = path.join(
     path.resolve(process.cwd(), ".reelio", "uploads"),
-    path.basename(normalizeKey(relKey)),
+    path.basename(normalizeKey(relKey))
   );
   try {
     await fs.promises.unlink(filePath);
