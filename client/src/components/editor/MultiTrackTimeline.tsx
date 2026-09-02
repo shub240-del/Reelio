@@ -8,10 +8,6 @@ import {
   EyeOff,
   Lock,
   Unlock,
-  ChevronUp,
-  ChevronDown,
-  Trash2,
-  Plus,
 } from "lucide-react";
 import { type CaptionCue, type ReviewRangeHighlight } from "@shared/editOps";
 
@@ -20,6 +16,7 @@ export interface TimelineClipItem {
   assetId: number;
   assetUrl: string;
   assetName: string;
+  assetMimeType: string;
   trackId: number;
   trackType: "video" | "audio";
   sourceStart: number;
@@ -61,6 +58,7 @@ interface MultiTrackTimelineProps {
   onToggleTrackLock?: (trackKey: string) => void;
   onToggleTrackVisible?: (trackKey: string) => void;
   getWaveformData?: (assetId: number) => number[];
+  getWaveformStatus?: (assetId: number) => "loading" | "ready" | "error";
 }
 
 function formatRulerTime(seconds: number): string {
@@ -69,6 +67,41 @@ function formatRulerTime(seconds: number): string {
   const ms = Math.floor((seconds % 1) * 100);
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}:${ms.toString().padStart(2, "0")}`;
 }
+
+function rulerStepForZoom(zoomLevel: number): number {
+  const desiredSeconds = 80 / Math.max(zoomLevel, 0.01);
+  return (
+    [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find(
+      step => step >= desiredSeconds
+    ) ?? 600
+  );
+}
+
+/** A real decoded frame, not a decorative filmstrip pattern. */
+const FilmstripFrame: React.FC<{ src: string; sourceTime: number }> = ({
+  src,
+  sourceTime,
+}) => {
+  const frameRef = useRef<HTMLVideoElement>(null);
+
+  return (
+    <video
+      ref={frameRef}
+      src={src}
+      muted
+      playsInline
+      preload="metadata"
+      aria-hidden="true"
+      tabIndex={-1}
+      className="h-full min-w-0 flex-1 border-r border-black/30 object-cover last:border-r-0"
+      onLoadedMetadata={event => {
+        const video = event.currentTarget;
+        const latestFrame = Math.max(0, video.duration - 0.04);
+        video.currentTime = Math.min(Math.max(0, sourceTime), latestFrame);
+      }}
+    />
+  );
+};
 
 export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
   clips,
@@ -97,6 +130,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
   onToggleTrackLock,
   onToggleTrackVisible,
   getWaveformData,
+  getWaveformStatus,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -104,7 +138,9 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
   const audio1Clips = clips.filter((c) => c.trackType === "audio" && c.trackId === 0);
   const audio2Clips = clips.filter((c) => c.trackType === "audio" && c.trackId > 0);
 
-  const timelineWidth = Math.max(totalDuration * zoomLevel, 1400);
+  const rulerDuration = Math.max(totalDuration, 10);
+  const timelineWidth = Math.max(rulerDuration * zoomLevel, 900);
+  const rulerStep = rulerStepForZoom(zoomLevel);
 
   const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -116,7 +152,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
   return (
     <div className="flex flex-1 h-full bg-[#0d0d12] overflow-hidden select-none">
       {/* Fixed Left Track Headers Column */}
-      <div className="w-48 bg-[#121218] border-r border-white/[0.08] flex flex-col flex-shrink-0 z-30 shadow-lg">
+      <div className="w-[220px] bg-[#121218] border-r border-white/[0.08] flex flex-col flex-shrink-0 z-30 shadow-lg">
         {/* + Track Header */}
         <div className="h-8 border-b border-white/[0.06] px-3 flex items-center justify-between bg-[#0e0e14]">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Tracks</span>
@@ -213,6 +249,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
         </div>
 
         {/* Track 4: Audio 2 (Purple) */}
+        {audio2Clips.length > 0 ? (
         <div className="h-16 border-b border-white/[0.06] p-2 flex flex-col justify-between bg-[#15151c]">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
@@ -241,6 +278,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
             </button>
           </div>
         </div>
+        ) : null}
       </div>
 
       {/* Main Timeline Scrollable Container */}
@@ -252,8 +290,8 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
         <div className="relative min-h-full" style={{ width: `${timelineWidth}px` }}>
           {/* Time Ruler */}
           <div className="h-8 border-b border-white/[0.08] bg-[#0f0f16] relative cursor-pointer">
-            {Array.from({ length: Math.ceil(totalDuration / 10) + 1 }, (_, i) => {
-              const sec = i * 10;
+            {Array.from({ length: Math.ceil(rulerDuration / rulerStep) + 1 }, (_, i) => {
+              const sec = i * rulerStep;
               return (
                 <div
                   key={i}
@@ -359,9 +397,10 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 return (
                   <div
                     key={clip.id}
+                    data-testid={`timeline-clip-${clip.id}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onSelectClip(clip.id, e.shiftKey || e.metaKey);
+                      onSelectClip(clip.id, e.shiftKey || e.metaKey || e.ctrlKey);
                     }}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
@@ -397,12 +436,32 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                       )}
                     </div>
 
-                    {/* Video Filmstrip / Pattern */}
-                    <div className="flex-1 flex items-center px-1 overflow-hidden opacity-70">
-                      <div className="w-full h-full flex items-center justify-around">
-                        {Array.from({ length: Math.min(30, Math.floor(clipWidth / 12)) }).map((_, i) => (
-                          <div key={i} className="w-1 h-full bg-emerald-400/20 border-r border-emerald-400/30" />
-                        ))}
+                    {/* Real source frames sampled across the visible clip range. */}
+                    <div className="flex-1 overflow-hidden bg-emerald-950/40 opacity-80">
+                      <div className="flex h-full w-full">
+                        {Array.from({
+                          length: Math.max(1, Math.min(12, Math.ceil(clipWidth / 72))),
+                        }).map((_, index, frames) =>
+                          clip.assetMimeType.startsWith("image/") ? (
+                            <img
+                              key={`${clip.id}-frame-${index}`}
+                              src={clip.assetUrl}
+                              alt=""
+                              aria-hidden="true"
+                              className="h-full min-w-0 flex-1 border-r border-black/30 object-cover last:border-r-0"
+                              decoding="async"
+                            />
+                          ) : (
+                            <FilmstripFrame
+                              key={`${clip.id}-frame-${index}`}
+                              src={clip.assetUrl}
+                              sourceTime={
+                                clip.sourceStart +
+                                clipDur * ((index + 0.5) / frames.length)
+                              }
+                            />
+                          )
+                        )}
                       </div>
                     </div>
 
@@ -450,9 +509,10 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 return (
                   <div
                     key={clip.id}
+                    data-testid={`timeline-clip-${clip.id}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onSelectClip(clip.id, e.shiftKey || e.metaKey);
+                      onSelectClip(clip.id, e.shiftKey || e.metaKey || e.ctrlKey);
                     }}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
@@ -481,26 +541,23 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                     <div className="px-2 py-0.5 text-[9px] font-medium text-sky-200 truncate bg-sky-950/70">
                       {clip.assetName}
                     </div>
-                    {/* Real Blue Audio Waveform Graphics */}
+                    {/* Peaks come only from Web Audio decoding of this asset. */}
                     <div className="flex-1 flex items-center justify-around px-1">
                       {waveformData.length > 0
                         ? waveformData.slice(0, Math.min(80, Math.floor(clipWidth / 3))).map((val, i) => (
                             <div
                               key={i}
                               className="w-[2px] bg-sky-400 rounded-full"
-                              style={{ height: `${Math.max(15, Math.min(95, (val || 0.3) * 100))}%` }}
+                              style={{ height: `${Math.max(4, Math.min(95, val * 100))}%` }}
                             />
                           ))
-                        : Array.from({ length: Math.min(60, Math.floor(clipWidth / 4)) }).map((_, i) => {
-                            const heightPercent = 25 + Math.sin(i * 0.8) * 35 + Math.cos(i * 1.5) * 20;
-                            return (
-                              <div
-                                key={i}
-                                className="w-[2px] bg-sky-400 rounded-full"
-                                style={{ height: `${Math.max(15, Math.min(90, heightPercent))}%` }}
-                              />
-                            );
-                          })}
+                        : (
+                          <span className="truncate px-2 text-[9px] text-sky-300/60">
+                            {getWaveformStatus?.(clip.assetId) === "loading"
+                              ? "Decoding waveform…"
+                              : "Waveform unavailable"}
+                          </span>
+                        )}
                     </div>
 
                     {/* Trim Handles */}
@@ -528,6 +585,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
           </div>
 
           {/* 4. Audio 2 Track Content (Purple Waveform) */}
+          {audio2Clips.length > 0 ? (
           <div className="h-16 border-b border-white/[0.04] relative bg-[#0e0e15]">
             {trackStates.audio1?.visible !== false &&
               audio2Clips.map((clip) => {
@@ -545,9 +603,10 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 return (
                   <div
                     key={clip.id}
+                    data-testid={`timeline-clip-${clip.id}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onSelectClip(clip.id, e.shiftKey || e.metaKey);
+                      onSelectClip(clip.id, e.shiftKey || e.metaKey || e.ctrlKey);
                     }}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
@@ -576,26 +635,23 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                     <div className="px-2 py-0.5 text-[9px] font-medium text-purple-200 truncate bg-purple-950/70">
                       {clip.assetName}
                     </div>
-                    {/* Real Purple Audio Waveform Graphics */}
+                    {/* Peaks come only from Web Audio decoding of this asset. */}
                     <div className="flex-1 flex items-center justify-around px-1">
                       {waveformData.length > 0
                         ? waveformData.slice(0, Math.min(80, Math.floor(clipWidth / 3))).map((val, i) => (
                             <div
                               key={i}
                               className="w-[2px] bg-purple-400 rounded-full"
-                              style={{ height: `${Math.max(15, Math.min(95, (val || 0.3) * 100))}%` }}
+                              style={{ height: `${Math.max(4, Math.min(95, val * 100))}%` }}
                             />
                           ))
-                        : Array.from({ length: Math.min(80, Math.floor(clipWidth / 3)) }).map((_, i) => {
-                            const heightPercent = 30 + Math.sin(i * 0.5) * 40 + Math.cos(i * 1.1) * 25;
-                            return (
-                              <div
-                                key={i}
-                                className="w-[2px] bg-purple-400 rounded-full"
-                                style={{ height: `${Math.max(15, Math.min(90, heightPercent))}%` }}
-                              />
-                            );
-                          })}
+                        : (
+                          <span className="truncate px-2 text-[9px] text-purple-300/60">
+                            {getWaveformStatus?.(clip.assetId) === "loading"
+                              ? "Decoding waveform…"
+                              : "Waveform unavailable"}
+                          </span>
+                        )}
                     </div>
 
                     {/* Trim Handles */}
@@ -621,6 +677,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 );
               })}
           </div>
+          ) : null}
         </div>
       </div>
     </div>

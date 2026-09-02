@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  MIN_REVIEWABLE_EDIT_RANGE_SECONDS,
   SUPPORTED_VIDEO_EFFECTS,
   editPlanSchema,
   type EditOp,
@@ -153,7 +154,9 @@ export function mapSilenceEvidenceToTimeline(
       }
     }
   }
-  return mergeRanges(output);
+  return mergeRanges(output).filter(
+    range => range.end - range.start >= MIN_REVIEWABLE_EDIT_RANGE_SECONDS
+  );
 }
 
 function mergeRanges(ranges: Array<{ start: number; end: number }>) {

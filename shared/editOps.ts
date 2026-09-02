@@ -21,6 +21,9 @@ import {
   type TimelineClip,
 } from "./timeline";
 
+/** Smallest affected range worth surfacing as a user-reviewable AI edit. */
+export const MIN_REVIEWABLE_EDIT_RANGE_SECONDS = 0.05;
+
 const timeRange = z
   .object({
     start: z.number().finite().min(0),

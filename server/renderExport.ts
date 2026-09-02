@@ -196,7 +196,7 @@ async function renderExportJob(
     let totalSourceBytes = 0;
     for (const assetId of new Set(visibleClips.map(clip => clip.assetId))) {
       const asset = assetMap.get(assetId);
-      if (!asset || !/^(video|audio)\//.test(asset.mimeType)) {
+      if (!asset || !/^(video|audio|image)\//.test(asset.mimeType)) {
         throw new Error("A timeline clip references unavailable media.");
       }
       const destination = path.join(

@@ -3,8 +3,10 @@ import {
   Undo2,
   Redo2,
   Scissors,
+  Copy,
   Trash2,
   Magnet,
+  Maximize2,
   Minus,
   Plus,
   Zap,
@@ -19,12 +21,15 @@ interface TimelineToolbarProps {
   onSplit: () => void;
   canDelete: boolean;
   onDelete: () => void;
+  canDuplicate?: boolean;
+  onDuplicate?: () => void;
   snapping: boolean;
   onToggleSnapping: () => void;
   currentTime: number;
   zoomLevel: number;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onZoomFit?: () => void;
   onToggleRipple?: () => void;
   isRippleActive?: boolean;
 }
@@ -46,24 +51,27 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
   onSplit,
   canDelete,
   onDelete,
+  canDuplicate = false,
+  onDuplicate,
   snapping,
   onToggleSnapping,
   currentTime,
   zoomLevel,
   onZoomIn,
   onZoomOut,
+  onZoomFit,
   onToggleRipple,
   isRippleActive = false,
 }) => {
   return (
-    <div className="h-11 bg-[#101016] border-t border-b border-white/[0.07] px-4 flex items-center justify-between text-xs select-none">
+    <div className="h-14 bg-[#101016] border-t border-b border-white/[0.07] px-4 flex items-center justify-between text-xs select-none">
       {/* Left Operations Group */}
       <div className="flex items-center gap-1.5">
         {/* Undo / Redo */}
         <button
           onClick={onUndo}
           disabled={!canUndo}
-          className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
+          className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
             canUndo ? "text-gray-300 hover:text-white hover:bg-white/[0.06]" : "text-gray-600 cursor-not-allowed"
           }`}
           title="Undo (Ctrl+Z)"
@@ -74,7 +82,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
         <button
           onClick={onRedo}
           disabled={!canRedo}
-          className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
+          className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
             canRedo ? "text-gray-300 hover:text-white hover:bg-white/[0.06]" : "text-gray-600 cursor-not-allowed"
           }`}
           title="Redo (Ctrl+Y)"
@@ -89,7 +97,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
         <button
           onClick={onSplit}
           disabled={!canSplit}
-          className={`h-7 px-2.5 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all uppercase tracking-wider ${
+          className={`h-8 px-2.5 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all uppercase tracking-wider ${
             canSplit
               ? "bg-white/[0.04] text-gray-200 border border-white/[0.08] hover:bg-white/[0.08] hover:border-white/[0.2]"
               : "text-gray-600 border border-white/[0.03] cursor-not-allowed"
@@ -104,7 +112,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
         <button
           onClick={onDelete}
           disabled={!canDelete}
-          className={`h-7 px-2.5 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all uppercase tracking-wider ${
+          className={`h-8 px-2.5 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all uppercase tracking-wider ${
             canDelete
               ? "bg-white/[0.04] text-gray-200 border border-white/[0.08] hover:bg-red-500/20 hover:text-red-300 hover:border-red-500/40"
               : "text-gray-600 border border-white/[0.03] cursor-not-allowed"
@@ -115,10 +123,25 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
           <span>Delete</span>
         </button>
 
+        <button
+          onClick={onDuplicate}
+          disabled={!canDuplicate}
+          className={`h-8 px-2.5 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all uppercase tracking-wider ${
+            canDuplicate
+              ? "bg-white/[0.04] text-gray-200 border border-white/[0.08] hover:bg-white/[0.08] hover:border-white/[0.2]"
+              : "text-gray-600 border border-white/[0.03] cursor-not-allowed"
+          }`}
+          title="Duplicate selected clips (Ctrl+D)"
+          aria-label="Duplicate selected clips"
+        >
+          <Copy className="w-3 h-3" />
+          <span>Duplicate</span>
+        </button>
+
         {/* SNAPPING Toggle */}
         <button
           onClick={onToggleSnapping}
-          className={`h-7 px-3 rounded text-[11px] font-semibold flex items-center gap-1.5 uppercase tracking-wider transition-all ${
+          className={`h-8 px-3 rounded text-[11px] font-semibold flex items-center gap-1.5 uppercase tracking-wider transition-all ${
             snapping
               ? "bg-sky-500/20 text-sky-300 border border-sky-500/50 shadow-[0_0_10px_rgba(56,189,248,0.2)]"
               : "bg-white/[0.04] text-gray-400 border border-white/[0.08] hover:text-white"
@@ -143,17 +166,29 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
         {/* Ripple / Slip Tool */}
         <button
           onClick={onToggleRipple}
-          className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
+          className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
             isRippleActive
               ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
               : "text-gray-400 hover:text-white hover:bg-white/[0.06]"
           }`}
-          title="Ripple Edit Mode"
+          title={isRippleActive ? "Disable ripple edit mode" : "Enable ripple edit mode"}
+          aria-label={isRippleActive ? "Disable ripple edit mode" : "Enable ripple edit mode"}
+          aria-pressed={isRippleActive}
         >
           <Zap className="w-3.5 h-3.5" />
         </button>
 
-        {/* Zoom Stepper: - 2.48 px/sec + */}
+        <button
+          type="button"
+          onClick={onZoomFit}
+          className="w-8 h-8 rounded flex items-center justify-center text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white"
+          title="Fit timeline to window"
+          aria-label="Fit timeline to window"
+        >
+          <Maximize2 className="w-3.5 h-3.5" />
+        </button>
+
+        {/* Zoom uses the same pixels-per-second unit as timeline geometry. */}
         <div className="flex items-center bg-[#15151f] rounded border border-white/[0.08] px-1 py-0.5">
           <button
             onClick={onZoomOut}
@@ -163,7 +198,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({
             <Minus className="w-3 h-3" />
           </button>
           <span className="px-2 font-mono text-[11px] text-gray-300">
-            {(zoomLevel / 25).toFixed(2)} px/sec
+            {zoomLevel.toFixed(0)} px/sec
           </span>
           <button
             onClick={onZoomIn}

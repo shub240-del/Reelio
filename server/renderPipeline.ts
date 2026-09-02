@@ -188,7 +188,11 @@ export function buildFfmpegCommand(
   const args = ["-hide_banner", "-nostdin", "-y"];
   usedAssetIds.forEach((assetId, index) => {
     inputIndex.set(assetId, index);
-    args.push("-i", sourceMap.get(assetId)!.localPath);
+    const asset = sourceMap.get(assetId)!;
+    if (asset.mimeType.startsWith("image/")) {
+      args.push("-loop", "1", "-framerate", number(fps));
+    }
+    args.push("-i", asset.localPath);
   });
 
   const filters: string[] = [

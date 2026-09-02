@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { probeMediaFile } from "./mediaProbe";
 import {
   buildFfmpegCommand,
   renderTimelineToFile,
@@ -15,6 +16,7 @@ let fixtureDir = "";
 let background = "";
 let overlay = "";
 let music = "";
+let still = "";
 
 function run(binary: string, args: string[], signal?: AbortSignal) {
   return new Promise<{ stdout: Buffer; stderr: string }>((resolve, reject) => {
@@ -68,6 +70,16 @@ function assets(): RenderAssetSource[] {
       fps: 0,
       hasAudio: true,
     },
+    {
+      id: 4,
+      localPath: still,
+      mimeType: "image/png",
+      duration: 5,
+      width: 320,
+      height: 180,
+      fps: 30,
+      hasAudio: false,
+    },
   ];
 }
 
@@ -76,6 +88,7 @@ beforeAll(async () => {
   background = path.join(fixtureDir, "background.mp4");
   overlay = path.join(fixtureDir, "overlay.mp4");
   music = path.join(fixtureDir, "music.wav");
+  still = path.join(fixtureDir, "still.png");
   await run(ffmpeg, [
     "-hide_banner",
     "-loglevel",
@@ -123,6 +136,19 @@ beforeAll(async () => {
     "-i",
     "sine=frequency=880:sample_rate=48000:duration=4",
     music,
+  ]);
+  await run(ffmpeg, [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    "color=c=green:s=320x180",
+    "-frames:v",
+    "1",
+    still,
   ]);
 }, 30_000);
 
@@ -307,6 +333,67 @@ describe("real multitrack FFmpeg pipeline", () => {
       "video",
     ]);
     expect(Number(probe.format.duration)).toBeCloseTo(2, 1);
+  }, 20_000);
+
+  it("renders a still image for its explicit five-second editor duration", async () => {
+    await expect(
+      probeMediaFile(still, { expectedMimeType: "image/png" })
+    ).resolves.toMatchObject({
+      duration: 5,
+      width: 320,
+      height: 180,
+      fps: 30,
+      hasAudio: false,
+      hasVideo: true,
+    });
+
+    const output = path.join(fixtureDir, "still-image.mp4");
+    const command = await renderTimelineToFile(
+      {
+        clips: [
+          {
+            id: 21,
+            assetId: 4,
+            trackId: 0,
+            trackType: "video",
+            sourceStart: 0,
+            duration: 2,
+            timelineStart: 0,
+            sortIndex: 0,
+            visible: true,
+            muted: true,
+          },
+        ],
+        assets: assets(),
+        width: 320,
+        height: 180,
+      },
+      output,
+      { signal: new AbortController().signal }
+    );
+    const imageInput = command.args.indexOf(still);
+    expect(command.args.slice(imageInput - 5, imageInput)).toEqual([
+      "-loop",
+      "1",
+      "-framerate",
+      "30.000000",
+      "-i",
+    ]);
+    const result = await run(ffprobe, [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration:stream=codec_type,width,height",
+      "-of",
+      "json",
+      output,
+    ]);
+    const probe = JSON.parse(result.stdout.toString("utf8"));
+    expect(Number(probe.format.duration)).toBeCloseTo(2, 1);
+    expect(probe.streams.find((stream: { codec_type: string }) => stream.codec_type === "video")).toMatchObject({
+      width: 320,
+      height: 180,
+    });
   }, 20_000);
 
   it("cancels an active FFmpeg process and rejects invalid media", async () => {

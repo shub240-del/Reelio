@@ -135,6 +135,29 @@ describe("AI request and plan validation", () => {
     ).toEqual([{ start: 6, end: 8 }]);
   });
 
+  it("does not surface sub-frame timeline intersections as 0.0 second edits", () => {
+    expect(
+      mapSilenceEvidenceToTimeline(
+        [
+          {
+            assetId: 10,
+            source: "browser-audio-decoder",
+            ranges: [{ start: 2, end: 4 }],
+          },
+        ],
+        [
+          {
+            ...context.clips[0],
+            sourceStart: 3.99999,
+            timelineStart: 5,
+            duration: 1,
+          },
+        ],
+        context.assets
+      )
+    ).toEqual([]);
+  });
+
   it("creates a stable revision and changes it when timeline data changes", () => {
     const first = createTimelineRevision(context.clips, context.assets);
     const second = createTimelineRevision(

@@ -55,6 +55,7 @@ export interface ExportClip {
 export interface ExportAsset {
   id: number;
   url: string;
+  mimeType?: string;
   width: number;
   height: number;
   duration: number;
@@ -139,7 +140,9 @@ export class ExportEngine {
 
     const width = opts.width ?? (firstAsset.width || 1280);
     const height = opts.height ?? (firstAsset.height || 720);
-    const end = timelineContentEnd(videoClips);
+    const end = timelineContentEnd(
+      this.clips.filter(c => c.visible !== false && c.duration > 0)
+    );
 
     if (end <= 0) throw new Error("Timeline has zero duration");
     if (end > MAX_BROWSER_EXPORT_DURATION_SECONDS)
@@ -255,14 +258,35 @@ export class ExportEngine {
       });
     };
 
+    const imageCache = new Map<string, Promise<HTMLImageElement>>();
+    const loadImageSource = (url: string) => {
+      const cached = imageCache.get(url);
+      if (cached) return cached;
+      const pending = new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.decoding = "async";
+        image.crossOrigin = "anonymous";
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error(`Source image could not be decoded: ${url}`));
+        image.src = url;
+      });
+      imageCache.set(url, pending);
+      return pending;
+    };
+
     // Prime a real frame before recording so the export does not begin black.
-    await loadSource(firstAsset.url);
-    source.currentTime = videoClips[0].sourceStart;
-    await new Promise<void>((resolve) => {
-      source.addEventListener("seeked", () => resolve(), { once: true });
-      setTimeout(resolve, 1200);
-    });
-    ctx.drawImage(source, 0, 0, width, height);
+    if (firstAsset.mimeType?.startsWith("image/")) {
+      const image = await loadImageSource(firstAsset.url);
+      ctx.drawImage(image, 0, 0, width, height);
+    } else {
+      await loadSource(firstAsset.url);
+      source.currentTime = videoClips[0].sourceStart;
+      await new Promise<void>((resolve) => {
+        source.addEventListener("seeked", () => resolve(), { once: true });
+        setTimeout(resolve, 1200);
+      });
+      ctx.drawImage(source, 0, 0, width, height);
+    }
 
     recorder.start(250);
     const renderStartedAt = performance.now();
@@ -287,21 +311,32 @@ export class ExportEngine {
       for (const clip of activeVideoClips) {
         const asset = this.assets.get(clip.assetId);
         if (asset?.url) {
-          // Switch source if needed
-          await loadSource(asset.url);
-
-          // Seek source to the correct frame
-          const seekTo = clip.sourceStart + (time - clip.timelineStart);
-          if (Math.abs(source.currentTime - seekTo) > 0.02) {
-            source.currentTime = seekTo;
-            await new Promise<void>((resolve) => {
-              const done = () => {
-                source.removeEventListener("seeked", done);
-                resolve();
-              };
-              source.addEventListener("seeked", done, { once: true });
-              setTimeout(done, 800);
-            });
+          let drawable: CanvasImageSource;
+          let sourceWidth: number;
+          let sourceHeight: number;
+          if (asset.mimeType?.startsWith("image/")) {
+            const image = await loadImageSource(asset.url);
+            drawable = image;
+            sourceWidth = image.naturalWidth || asset.width || width;
+            sourceHeight = image.naturalHeight || asset.height || height;
+          } else {
+            // Switch source if needed and seek to the real source frame.
+            await loadSource(asset.url);
+            const seekTo = clip.sourceStart + (time - clip.timelineStart);
+            if (Math.abs(source.currentTime - seekTo) > 0.02) {
+              source.currentTime = seekTo;
+              await new Promise<void>((resolve) => {
+                const done = () => {
+                  source.removeEventListener("seeked", done);
+                  resolve();
+                };
+                source.addEventListener("seeked", done, { once: true });
+                setTimeout(done, 800);
+              });
+            }
+            drawable = source;
+            sourceWidth = source.videoWidth || asset.width || width;
+            sourceHeight = source.videoHeight || asset.height || height;
           }
 
           // Apply VideoFX via CanvasRenderingContext2D filter
@@ -311,8 +346,6 @@ export class ExportEngine {
           const cropTop = Math.max(0, Math.min(0.9, clip.cropTop ?? 0));
           const cropRight = Math.max(0, Math.min(0.9, clip.cropRight ?? 0));
           const cropBottom = Math.max(0, Math.min(0.9, clip.cropBottom ?? 0));
-          const sourceWidth = source.videoWidth || asset.width || width;
-          const sourceHeight = source.videoHeight || asset.height || height;
           const sx = sourceWidth * cropLeft;
           const sy = sourceHeight * cropTop;
           const sw = sourceWidth * Math.max(0.05, 1 - cropLeft - cropRight);
@@ -322,7 +355,7 @@ export class ExportEngine {
           const dh = sh * fit;
           const dx = Math.max(0, Math.min(width - dw, (width - dw) / 2 + (clip.positionX ?? 0) * width / 2));
           const dy = Math.max(0, Math.min(height - dh, (height - dh) / 2 + (clip.positionY ?? 0) * height / 2));
-          ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
+          ctx.drawImage(drawable, sx, sy, sw, sh, dx, dy, dw, dh);
           ctx.filter = "none";
         }
       }
@@ -419,7 +452,11 @@ export async function exportTimeline(
 
   const hasAudio = clips.some((c) => {
     const asset = assets.find((a) => a.id === c.assetId);
-    return (c.trackType === "audio" || asset?.hasAudio) && !c.muted;
+    return (
+      c.visible !== false &&
+      (c.trackType === "audio" || asset?.hasAudio) &&
+      !c.muted
+    );
   });
 
   return { sizeKb: Math.round(blob.size / 1024), hasAudio };

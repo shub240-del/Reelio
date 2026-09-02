@@ -150,6 +150,22 @@ describe("bucketPeaks", () => {
   });
 });
 
+describe("isSupportedMedia images", () => {
+  it("accepts supported image MIME types", () => {
+    expect(isSupportedMedia({ name: "cover.png", type: "image/png" })).toBe(true);
+    expect(isSupportedMedia({ name: "photo.jpg", type: "image/jpeg" })).toBe(true);
+    expect(isSupportedMedia({ name: "still.webp", type: "image/webp" })).toBe(true);
+  });
+
+  it("accepts image extensions when the browser omits the MIME type", () => {
+    expect(isSupportedMedia({ name: "poster.JPEG", type: "" })).toBe(true);
+  });
+
+  it("continues to reject unsupported document formats", () => {
+    expect(isSupportedMedia({ name: "notes.pdf", type: "application/pdf" })).toBe(false);
+  });
+});
+
 describe("isSupportedMedia", () => {
   it("accepts mp4 by mime type", () => {
     expect(isSupportedMedia({ name: "a.mp4", type: "video/mp4" })).toBe(true);
@@ -175,8 +191,8 @@ describe("isSupportedMedia", () => {
     expect(isSupportedMedia({ name: "a.mp3", type: "" })).toBe(true);
   });
 
-  it("rejects an image", () => {
-    expect(isSupportedMedia({ name: "a.png", type: "image/png" })).toBe(false);
+  it("accepts a PNG image", () => {
+    expect(isSupportedMedia({ name: "a.png", type: "image/png" })).toBe(true);
   });
 
   it("rejects a pdf with no usable extension match", () => {

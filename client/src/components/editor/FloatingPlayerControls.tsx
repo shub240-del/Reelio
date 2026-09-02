@@ -46,6 +46,7 @@ export const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
         onClick={onGoToStart}
         className="w-8 h-8 rounded-full hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-colors"
         title="Go to start"
+        aria-label="Go to timeline start"
       >
         <SkipBack className="w-4 h-4" />
       </button>
@@ -55,6 +56,7 @@ export const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
         onClick={onTogglePlay}
         className="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-500 to-sky-400 text-white flex items-center justify-center shadow-[0_0_15px_rgba(56,189,248,0.5)] hover:shadow-[0_0_22px_rgba(56,189,248,0.7)] hover:scale-105 active:scale-95 transition-all"
         title={isPlaying ? "Pause (Space)" : "Play (Space)"}
+        aria-label={isPlaying ? "Pause timeline" : "Play timeline"}
       >
         {isPlaying ? (
           <Pause className="w-4 h-4 fill-white" />
@@ -68,6 +70,7 @@ export const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
         onClick={onSkipForward}
         className="w-8 h-8 rounded-full hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-colors"
         title="Skip forward 5s"
+        aria-label="Skip forward 5 seconds"
       >
         <SkipForward className="w-4 h-4" />
       </button>
@@ -79,6 +82,7 @@ export const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
         onClick={onToggleMute}
         className="w-7 h-7 rounded-full hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-colors"
         title={isMuted ? "Unmute" : "Mute"}
+        aria-label={isMuted ? "Unmute preview audio" : "Mute preview audio"}
       >
         {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
       </button>
@@ -88,14 +92,16 @@ export const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
         <button
           onClick={onZoomOut}
           className="w-6 h-6 rounded hover:bg-white/[0.08] text-gray-400 hover:text-white flex items-center justify-center"
-          title="Zoom out preview"
+          title="Zoom out timeline"
+          aria-label="Zoom out timeline"
         >
           <Minus className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={onZoomIn}
           className="w-6 h-6 rounded hover:bg-white/[0.08] text-gray-400 hover:text-white flex items-center justify-center"
-          title="Zoom in preview"
+          title="Zoom in timeline"
+          aria-label="Zoom in timeline"
         >
           <Plus className="w-3.5 h-3.5" />
         </button>

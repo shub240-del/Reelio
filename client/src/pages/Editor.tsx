@@ -2,32 +2,19 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import {
-  ArrowLeft,
   Check,
-  CheckCircle2,
-  CheckSquare,
   ChevronDown,
   ChevronUp,
   Copy,
-  Eye,
   FileVideo,
-  ListChecks,
-  ListFilter,
   Loader2,
-  Pause,
-  Play,
   Scissors,
-  SkipBack,
-  SkipForward,
   Sparkles,
-  Square,
   Trash2,
   Upload,
   Volume2,
   VolumeX,
   X,
-  ZoomIn,
-  ZoomOut,
   AlertTriangle,
   FileText,
 } from "lucide-react";
@@ -38,6 +25,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import { Link, useParams } from "wouter";
 import { toast } from "sonner";
@@ -52,6 +40,8 @@ import {
   nextSelection,
   reindexTrack,
   resolveTrim,
+  rippleDeletePatches,
+  rippleTrimPatches,
   snapCandidates,
   splitOffset,
 } from "@/editor/interaction";
@@ -68,22 +58,23 @@ import {
   type EditPlan,
   type ReviewRangeHighlight,
 } from "../../../shared/editOps";
-import { detectSilenceRanges } from "@/editor/silence";
+import {
+  detectSilenceRanges,
+  normalizeReviewableSilenceRanges,
+} from "@/editor/silence";
 import { extractMediaEvidence } from "@/editor/mediaIntelligence";
 import { getActiveCue } from "@/editor/captions";
 import { planEditorRequest } from "@/editor/ai";
 import { currentMode, onModeResolved, type ReelioMode } from "@/guest/link";
-import {
-  LeftCategoryNav,
-  type CategoryTab,
-  type MediaSubTab,
-} from "@/components/editor/LeftCategoryNav";
 import { MediaGrid } from "@/components/editor/MediaGrid";
 import { AIAgentPanel } from "@/components/editor/AIAgentPanel";
+import { ClipInspectorPanel } from "@/components/editor/ClipInspectorPanel";
 import { FloatingPlayerControls } from "@/components/editor/FloatingPlayerControls";
 import { TimelineToolbar } from "@/components/editor/TimelineToolbar";
 import { MultiTrackTimeline } from "@/components/editor/MultiTrackTimeline";
 import { exportTimeline } from "@/editor/export";
+import { PlaybackClock } from "@/editor/playbackClock";
+import { ReelioLogo } from "@/components/brand/ReelioLogo";
 
 /* ─── Types ─── */
 interface TimelineClip {
@@ -91,6 +82,7 @@ interface TimelineClip {
   assetId: number;
   assetUrl: string;
   assetName: string;
+  assetMimeType: string;
   trackId: number;
   trackType: "video" | "audio";
   sourceStart: number;
@@ -213,6 +205,13 @@ export default function Editor() {
   /* State */
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const playbackClockRef = useRef<PlaybackClock | null>(null);
+  if (!playbackClockRef.current) {
+    playbackClockRef.current = new PlaybackClock(0);
+  }
+  const seekTimeline = useCallback((time: number) => {
+    playbackClockRef.current?.seek(time);
+  }, []);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [showAssets, setShowAssets] = useState(true);
@@ -268,9 +267,11 @@ export default function Editor() {
   );
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [captions, setCaptions] = useState<EditorCaptionCue[]>([]);
-  const [activeCategory, setActiveCategory] = useState<CategoryTab>("media");
-  const [activeSubTab, setActiveSubTab] = useState<MediaSubTab>("your-media");
+  // The left workspace is intentionally fixed to media. Legacy editor logic
+  // remains available while its controls move to contextual surfaces.
+  const activeCategory: string = "media";
   const [snapping, setSnapping] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isRippleActive, setIsRippleActive] = useState<boolean>(false);
@@ -321,19 +322,23 @@ export default function Editor() {
     );
   };
 
-  const handleApplyVideoFx = async (fxName: string) => {
+  const handleApplyVideoFx = async (fxName: string | null) => {
     if (!activeClip) {
       toast.info("Select a video clip first to apply video effect");
       return;
     }
     try {
-      recordHistory(`Apply ${fxName} effect`);
+      recordHistory(fxName ? `Apply ${fxName} effect` : "Clear video effect");
       await updateClipMutation.mutateAsync({
         id: activeClip.id,
         videoFx: fxName,
       } as any);
       await refetchClips();
-      toast.success(`Applied ${fxName} to ${activeClip.assetName}`);
+      toast.success(
+        fxName
+          ? `Applied ${fxName} to ${activeClip.assetName}`
+          : `Cleared the video effect from ${activeClip.assetName}`
+      );
     } catch (err) {
       toast.error(
         "Failed to apply effect: " +
@@ -352,6 +357,10 @@ export default function Editor() {
         | "positionX"
         | "positionY"
         | "zIndex"
+        | "cropLeft"
+        | "cropTop"
+        | "cropRight"
+        | "cropBottom"
       >
     >
   ) => {
@@ -465,8 +474,8 @@ export default function Editor() {
    */
   const clipsRef = useRef<TimelineClip[]>([]);
   const selectionRef = useRef<number[]>([]);
-  const autoplayNextRef = useRef(false);
   const audioRefs = useRef(new Map<number, HTMLAudioElement>());
+  const syncedTranscriptionRef = useRef<number | null>(null);
   const settledAIProposalIdsRef = useRef(new Set<string>());
   const restoredGuestProposalKeyRef = useRef<string | null>(null);
   selectionRef.current = selectedClipIds;
@@ -510,7 +519,13 @@ export default function Editor() {
     refetch: () => refetchClips(),
   });
   recordTrackHistoryRef.current = recordHistory;
-  const { generateWaveform, getWaveform, isGenerating } = useWaveform();
+  const {
+    generateWaveform,
+    getWaveform,
+    isGenerating,
+    loading: waveformLoading,
+    error: waveformErrors,
+  } = useWaveform();
 
   /* Derived */
   const timelineClips: TimelineClip[] = (clips ?? []).map(c => {
@@ -529,6 +544,7 @@ export default function Editor() {
       cropBottom: c.cropBottom ?? 0,
       assetUrl: asset?.url ?? "",
       assetName: asset?.name ?? "Unknown",
+      assetMimeType: asset?.mimeType ?? "",
     };
   });
 
@@ -536,6 +552,7 @@ export default function Editor() {
   clipsRef.current = timelineClips;
 
   const totalDuration = computeTotalDuration(timelineClips);
+  const contentDuration = timelineContentEnd(timelineClips);
   const activeCue = getActiveCue(captions, currentTime);
   const selectedClips = timelineClips.filter(c =>
     selectedClipIds.includes(c.id)
@@ -559,7 +576,11 @@ export default function Editor() {
   useEffect(() => {
     if (assets && assets.length > 0) {
       for (const asset of assets) {
-        if (!isGenerating(asset.id) && getWaveform(asset.id).length === 0) {
+        if (
+          asset.hasAudio &&
+          !isGenerating(asset.id) &&
+          getWaveform(asset.id).length === 0
+        ) {
           generateWaveform(asset.id, asset.url);
         }
       }
@@ -671,8 +692,63 @@ export default function Editor() {
     }
   }, [projId, reelioMode]);
 
-  const playbackClip = getActiveClip(timelineClips, currentTime);
+  useEffect(() => {
+    const clock = playbackClockRef.current;
+    if (!clock) return;
+    return clock.subscribe((time, playing) => {
+      setCurrentTime(time);
+      setIsPlaying(playing);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!playbackClockRef.current) return;
+    playbackClockRef.current.totalDuration = contentDuration;
+  }, [contentDuration]);
+
+  useEffect(() => {
+    if (!playbackClockRef.current) return;
+    playbackClockRef.current.playbackSpeed = playbackSpeed;
+  }, [playbackSpeed]);
+
+  useEffect(
+    () => () => {
+      playbackClockRef.current?.destroy();
+    },
+    []
+  );
+
+  const playbackClip = getActiveClip(
+    timelineClips.filter(
+      clip =>
+        clip.trackType === "video" &&
+        clip.visible !== false &&
+        trackStates.video0?.visible !== false
+    ),
+    currentTime
+  );
   const activeClip = selectedClips[0] ?? playbackClip;
+  const previewMediaStyle: CSSProperties = playbackClip
+    ? {
+        filter:
+          playbackClip.videoFx === "Cinematic LUT"
+            ? "contrast(1.2) saturate(1.2) brightness(0.95)"
+            : playbackClip.videoFx === "Vibrant HDR"
+              ? "saturate(1.45) contrast(1.1) brightness(1.05)"
+              : playbackClip.videoFx === "Film Grain"
+                ? "contrast(1.1) sepia(0.15)"
+                : playbackClip.videoFx === "Vignette Blur"
+                  ? "contrast(1.25)"
+                  : playbackClip.videoFx === "Glow Accent"
+                    ? "brightness(1.15) saturate(1.25)"
+                    : playbackClip.videoFx === "Sharpen"
+                      ? "contrast(1.35)"
+                      : "none",
+        transform: `translate(${(playbackClip.positionX ?? 0) * 50}%, ${(playbackClip.positionY ?? 0) * 50}%) scale(${playbackClip.scale ?? 1})`,
+        transformOrigin: "center",
+        clipPath: `inset(${(playbackClip.cropTop ?? 0) * 100}% ${(playbackClip.cropRight ?? 0) * 100}% ${(playbackClip.cropBottom ?? 0) * 100}% ${(playbackClip.cropLeft ?? 0) * 100}%)`,
+      }
+    : {};
   const activeAudioClips = timelineClips.filter(
     clip =>
       clip.trackType === "audio" &&
@@ -705,13 +781,14 @@ export default function Editor() {
             0,
             Math.min(1, (clip.volume ?? 1) * (clip.trackVolume ?? 1))
           );
+      audio.playbackRate = playbackSpeed;
       if (isPlaying) {
         void audio.play().catch(() => undefined);
       } else {
         audio.pause();
       }
     }
-  }, [activeAudioClips, currentTime, isPlaying, trackStates]);
+  }, [activeAudioClips, currentTime, isPlaying, playbackSpeed, trackStates]);
 
   const handleExport = useCallback(async (): Promise<boolean> => {
     if (exporting || timelineClips.length === 0) {
@@ -752,6 +829,7 @@ export default function Editor() {
         (assets ?? []).map(a => ({
           id: a.id,
           url: a.url,
+          mimeType: a.mimeType,
           width: a.width || 1280,
           height: a.height || 720,
           duration: a.duration,
@@ -889,7 +967,29 @@ export default function Editor() {
     }
   }, [analysisJobsQuery.data]);
 
-  const handleStartAnalysis = async (kind: "transcription" | "scene") => {
+  const completedTranscriptionId = useMemo(
+    () =>
+      analysisJobsQuery.data?.find(
+        job => job.kind === "transcription" && job.status === "done"
+      )?.id ?? null,
+    [analysisJobsQuery.data]
+  );
+
+  useEffect(() => {
+    if (
+      reelioMode !== "cloud" ||
+      completedTranscriptionId === null ||
+      syncedTranscriptionRef.current === completedTranscriptionId
+    ) {
+      return;
+    }
+    syncedTranscriptionRef.current = completedTranscriptionId;
+    void cloudCaptionsQuery.refetch();
+  }, [completedTranscriptionId, reelioMode]);
+
+  const handleStartAnalysis = async (
+    kind: "transcription" | "scene"
+  ): Promise<boolean> => {
     const candidate =
       (assets ?? []).find(
         asset =>
@@ -905,7 +1005,7 @@ export default function Editor() {
           ? "Add or select a video asset before detecting scenes."
           : "Add or select media with audio before transcription."
       );
-      return;
+      return false;
     }
     try {
       const job = await startAnalysisMutation.mutateAsync({
@@ -917,17 +1017,20 @@ export default function Editor() {
       await analysisJobsQuery.refetch();
       if (job.status === "failed") {
         toast.error(job.errorMessage ?? "Analysis is unavailable.");
+        return false;
       } else {
         toast.info(
           kind === "scene"
             ? "Measured scene detection started."
             : "Timestamped transcription started."
         );
+        return true;
       }
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Could not start analysis"
       );
+      return false;
     }
   };
 
@@ -950,7 +1053,7 @@ export default function Editor() {
         sourceTime < candidate.sourceStart + candidate.duration
     );
     if (clip)
-      setCurrentTime(clip.timelineStart + sourceTime - clip.sourceStart);
+      seekTimeline(clip.timelineStart + sourceTime - clip.sourceStart);
   };
 
   const handleProposeFillerRemoval = async (occurrenceIndices: number[]) => {
@@ -1341,12 +1444,19 @@ export default function Editor() {
           instruction
         )
       ) {
+        const configured =
+          reelioMode === "cloud" &&
+          analysisCapabilitiesQuery.data?.transcription.available;
+        const started = configured
+          ? await handleStartAnalysis("transcription")
+          : false;
         setAiMessages(messages => [
           ...messages,
           {
             role: "assistant",
-            content:
-              "Timestamped transcription is not configured. Reelio cannot truthfully generate captions without real transcript text.",
+            content: started
+              ? "Timestamped transcription started. Captions will appear on the timeline after the configured speech provider returns measured cues."
+              : "Timestamped transcription is not configured. Reelio cannot truthfully generate captions without real transcript text.",
           },
         ]);
         return;
@@ -1386,6 +1496,9 @@ export default function Editor() {
           }
         }
       }
+      const reviewableSilenceRanges = normalizeReviewableSilenceRanges(
+        timelineSilenceRanges,
+      );
 
       if (reelioMode === "guest") {
         const normalized =
@@ -1397,7 +1510,7 @@ export default function Editor() {
         const plan = planEditorRequest(
           normalized,
           timelineClips,
-          timelineSilenceRanges,
+          reviewableSilenceRanges,
           {
             playhead: currentTime,
             selectedClipIds,
@@ -1413,7 +1526,7 @@ export default function Editor() {
         setPendingPlan(plan);
         setPendingProposalId(null);
         setPendingProvenance({
-          source: timelineSilenceRanges.length
+          source: reviewableSilenceRanges.length
             ? "browser-audio-evidence"
             : "deterministic",
           provider: null,
@@ -1512,11 +1625,42 @@ export default function Editor() {
   };
 
   const handleExecuteQuickAction = (actionType: string) => {
+    if (actionType === "auto-captions")
+      void handleAISendMessage("Generate timestamped captions.");
     if (actionType === "silence") void handleAISendMessage("Remove silence.");
-    if (actionType === "first-five")
-      void handleAISendMessage("Remove the first 5 seconds.");
-    if (actionType === "split-playhead")
-      void handleAISendMessage("Split the selected clip at the playhead.");
+    if (actionType === "restart-phrases")
+      void handleAISendMessage("Detect and remove restart phrases.");
+    if (actionType === "filler-words") {
+      if (transcriptionEvidence?.fillers.length) {
+        void handleProposeFillerRemoval(
+          transcriptionEvidence.fillers.map((_, index) => index)
+        );
+      } else {
+        toast.info(
+          "Generate a timestamped transcript before reviewing filler-word removals. Use Auto Captions in the AI Agent."
+        );
+      }
+    }
+    if (actionType === "first-takes")
+      void handleAISendMessage(
+        "Detect abandoned first takes and propose cuts."
+      );
+    if (actionType === "sync-music")
+      void handleAISendMessage("Sync the selected clips to the music track.");
+    if (actionType === "create-short")
+      void handleAISendMessage(
+        "Create a concise short edit from the selected clips and current timeline."
+      );
+  };
+
+  const handleNewAIChat = () => {
+    if (pendingPlan) {
+      toast.info("Apply or dismiss the current edit proposal first.");
+      return;
+    }
+    setAiMessages([]);
+    setLastAIInstruction("");
+    setAiPhase("idle");
   };
 
   /**
@@ -1536,17 +1680,22 @@ export default function Editor() {
         toast.error("This asset has no usable duration");
         return;
       }
+      const timelineStart = timelineContentEnd(timelineClips);
       try {
+        recordHistory(`Add ${asset.name || "media"} to timeline`);
         await createClipMutation.mutateAsync({
           projectId: projId,
           assetId: asset.id,
           trackType: asset.mimeType.startsWith("audio/") ? "audio" : "video",
           sourceStart: 0,
           duration: asset.duration,
-          timelineStart: timelineContentEnd(timelineClips),
+          timelineStart,
           sortIndex: timelineClips.length,
         });
         await refetchClips();
+        // Import/add should immediately show the new composition in preview.
+        // Selection remains independent so the inspector does not cover it.
+        seekTimeline(timelineStart);
         toast.success(`Added "${asset.name}" to timeline`);
       } catch (err) {
         toast.error(
@@ -1558,7 +1707,9 @@ export default function Editor() {
     [
       createClipMutation,
       projId,
+      recordHistory,
       refetchClips,
+      seekTimeline,
       timelineClips,
       timelineClips.length,
     ]
@@ -1584,7 +1735,7 @@ export default function Editor() {
   const handleFileUpload = useCallback(
     async (file: File) => {
       if (!isSupportedMedia(file)) {
-        toast.error("Please select a supported video or audio file");
+        toast.error("Please select a supported video, audio, or image file");
         return;
       }
       const mode = currentMode();
@@ -1599,9 +1750,7 @@ export default function Editor() {
         setUploadProgress(10);
         const mimeType =
           file.type ||
-          (metadata.mimeType.startsWith("audio/")
-            ? metadata.mimeType
-            : "video/mp4");
+          metadata.mimeType;
         const commonPayload = {
           projectId: projId,
           fileName: file.name,
@@ -1666,28 +1815,21 @@ export default function Editor() {
   useEffect(() => {
     if (playbackClip && previewVideoRef.current) {
       const video = previewVideoRef.current;
+      video.playbackRate = playbackSpeed;
       const sourceTime = Math.max(
         playbackClip.sourceStart,
         currentTime - playbackClip.timelineStart + playbackClip.sourceStart
       );
-      if (Math.abs(video.currentTime - sourceTime) > 0.05) {
+      if (Math.abs(video.currentTime - sourceTime) > 0.1) {
         video.currentTime = sourceTime;
       }
-      // If playback was already running, resume after the new source loads.
       if (isPlaying && video.paused) {
-        void video.play().catch(() => setIsPlaying(false));
+        void video.play().catch(() => playbackClockRef.current?.pause());
+      } else if (!isPlaying && !video.paused) {
+        video.pause();
       }
     }
-  }, [playbackClip?.id, currentTime, isPlaying]);
-
-  /* Video time sync from preview video */
-  const handlePreviewTimeUpdate = () => {
-    if (!playbackClip || !previewVideoRef.current) return;
-    const sourceTime = previewVideoRef.current.currentTime;
-    const timelineTime =
-      playbackClip.timelineStart + (sourceTime - playbackClip.sourceStart);
-    setCurrentTime(timelineTime);
-  };
+  }, [playbackClip?.id, currentTime, isPlaying, playbackSpeed]);
 
   const handlePreviewLoadedMetadata = () => {
     if (!playbackClip || !previewVideoRef.current) return;
@@ -1695,27 +1837,30 @@ export default function Editor() {
       playbackClip.sourceStart,
       currentTime - playbackClip.timelineStart + playbackClip.sourceStart
     );
-    if (autoplayNextRef.current) {
-      autoplayNextRef.current = false;
-      void previewVideoRef.current.play().catch(() => setIsPlaying(false));
+    previewVideoRef.current.playbackRate = playbackSpeed;
+    if (isPlaying) {
+      void previewVideoRef.current
+        .play()
+        .catch(() => playbackClockRef.current?.pause());
     }
   };
 
   const togglePlay = () => {
-    if (!previewVideoRef.current) return;
-    if (isPlaying) {
-      previewVideoRef.current.pause();
-    } else {
-      previewVideoRef.current.play();
+    const clock = playbackClockRef.current;
+    if (!clock || contentDuration <= 0) {
+      toast.info("Add media to the timeline before playing.");
+      return;
     }
-    setIsPlaying(!isPlaying);
+    if (clock.isPlaying) {
+      clock.pause();
+    } else {
+      clock.play();
+    }
   };
 
   const handlePlaybackSpeedChange = (speed: number) => {
     setPlaybackSpeed(speed);
-    if (previewVideoRef.current) {
-      previewVideoRef.current.playbackRate = speed;
-    }
+    if (playbackClockRef.current) playbackClockRef.current.playbackSpeed = speed;
   };
 
   /* Timeline navigation */
@@ -1723,7 +1868,7 @@ export default function Editor() {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const time = Math.max(0, x / zoomLevel);
-    setCurrentTime(time);
+    seekTimeline(time);
     // Sync video to the new position
     if (previewVideoRef.current) {
       const active = getActiveClip(timelineClips, time);
@@ -1737,7 +1882,7 @@ export default function Editor() {
 
   const handleSkipBack = () => {
     const newTime = Math.max(0, currentTime - 5);
-    setCurrentTime(newTime);
+    seekTimeline(newTime);
     if (previewVideoRef.current) {
       const active = getActiveClip(timelineClips, newTime);
       if (active) {
@@ -1750,7 +1895,7 @@ export default function Editor() {
 
   const handleSkipForward = () => {
     const newTime = Math.min(totalDuration, currentTime + 5);
-    setCurrentTime(newTime);
+    seekTimeline(newTime);
     if (previewVideoRef.current) {
       const active = getActiveClip(timelineClips, newTime);
       if (active) {
@@ -1762,7 +1907,7 @@ export default function Editor() {
   };
 
   const handleGoToStart = () => {
-    setCurrentTime(0);
+    seekTimeline(0);
     if (previewVideoRef.current) {
       const active = getActiveClip(timelineClips, 0);
       if (active) {
@@ -1793,7 +1938,7 @@ export default function Editor() {
 
     // sortIndex must follow left-to-right position, not an arbitrary increment.
     const track = timelineClips
-      .filter(c => c.trackType === clip.trackType)
+      .filter(c => c.trackType === clip.trackType && c.trackId === clip.trackId)
       .map(c => (c.id === clip.id ? { ...c, timelineStart: newStart } : c));
     for (const patch of reindexTrack(track)) {
       await updateClipMutation.mutateAsync({
@@ -1901,7 +2046,9 @@ export default function Editor() {
       );
       const newIds: number[] = [];
       for (const clip of targets) {
-        const track = timelineClips.filter(c => c.trackType === clip.trackType);
+        const track = timelineClips.filter(
+          c => c.trackType === clip.trackType && c.trackId === clip.trackId
+        );
         const created: any = await createClipMutation.mutateAsync({
           projectId: projId,
           assetId: clip.assetId,
@@ -1975,7 +2122,13 @@ export default function Editor() {
       recordHistory(
         clipIds.length > 1 ? `Delete ${clipIds.length} clips` : "Delete clip"
       );
+      const ripplePatches = isRippleActive
+        ? rippleDeletePatches(timelineClips, clipIds)
+        : [];
       for (const id of clipIds) await deleteClipMutation.mutateAsync({ id });
+      for (const patch of ripplePatches) {
+        await updateClipMutation.mutateAsync(patch);
+      }
       await refetchClips();
       setSelectedClipIds([]);
       toast.success(
@@ -2046,6 +2199,18 @@ export default function Editor() {
           id: clip.id,
           timelineStart: next.timelineStart,
         });
+      }
+      if (isRippleActive) {
+        const oldEnd = clip.timelineStart + clip.duration;
+        const newEnd = next.timelineStart + next.duration;
+        for (const patch of rippleTrimPatches(
+          timelineClips,
+          clip.id,
+          oldEnd,
+          newEnd
+        )) {
+          await updateClipMutation.mutateAsync(patch);
+        }
       }
       await refetchClips();
       toast.success("Clip trimmed");
@@ -2188,100 +2353,172 @@ export default function Editor() {
   }
 
   return (
-    <div className="min-h-screen lg:h-screen bg-[#0a0a0f] flex flex-col overflow-y-auto lg:overflow-hidden text-white font-sans select-none">
+    <div className="flex min-h-screen flex-col overflow-y-auto bg-[#0a0a0f] font-sans text-white select-none lg:h-screen lg:overflow-hidden">
       {/* Top Header Bar */}
-      <header className="min-h-11 bg-[#0c0c12] border-b border-white/[0.07] flex items-center justify-between gap-2 px-2 sm:px-4 flex-shrink-0 z-30">
-        <div className="flex min-w-0 items-center gap-1 sm:gap-3">
+      <header className="z-30 flex h-16 min-h-16 flex-shrink-0 items-center justify-between gap-2 border-b border-white/[0.09] bg-[#0c0c0f] px-3 sm:px-5">
+        <div className="flex min-w-0 items-center gap-1 sm:gap-4">
           <Link href="/projects">
             <Button
               variant="ghost"
               size="sm"
-              className="text-gray-400 hover:text-white gap-1.5 h-7 px-2 text-xs"
+              className="h-10 gap-2 px-1 text-gray-200 hover:bg-transparent hover:text-white sm:px-2"
+              aria-label="Back to projects"
             >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Back</span>
+              <ReelioLogo size={29} withWordmark={false} />
+              <span className="hidden text-xl font-bold tracking-tight sm:inline">Reelio</span>
             </Button>
           </Link>
-          <div className="flex items-center gap-2">
-            <span className="max-w-[120px] truncate text-white font-semibold text-xs tracking-wide sm:max-w-xs">
+          <div className="hidden h-8 w-px bg-white/10 sm:block" />
+          <div className="flex items-center gap-3">
+            <span className="max-w-[120px] truncate text-sm font-semibold tracking-wide text-white sm:max-w-xs sm:text-base">
               {project.name}
             </span>
-            <span className="text-sky-400 text-[10px] font-mono px-2 py-0.5 bg-sky-500/10 border border-sky-500/20 rounded-full">
-              {project.status}
+            <span className="hidden text-xs text-gray-500 sm:inline">
+              {createClipMutation.isPending ||
+              updateClipMutation.isPending ||
+              trimClipMutation.isPending ||
+              splitClipMutation.isPending ||
+              deleteClipMutation.isPending
+                ? "Saving…"
+                : "Saved"}
             </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 sm:gap-2">
-          {reelioMode === "cloud" ? (
-            latestServerExport?.status === "done" && latestServerExport.url ? (
-              <a
-                href={latestServerExport.url}
-                download
-                className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 sm:px-3 sm:text-xs"
-              >
-                Download MP4
-              </a>
-            ) : latestServerExport?.status === "processing" ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={handleCancelServerExport}
-                className="h-7 border-amber-500/30 px-2 text-[10px] text-amber-200 sm:px-3 sm:text-xs"
-              >
-                MP4 {latestServerExport.progress}% · Cancel
-              </Button>
-            ) : latestServerExport?.status === "failed" ||
-              latestServerExport?.status === "cancelled" ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={handleRetryServerExport}
-                disabled={retryExportMutation.isPending}
-                title={latestServerExport.errorMessage ?? undefined}
-                aria-label={`${latestServerExport.status === "failed" ? "MP4 render failed" : "MP4 render cancelled"}. Retry server render${latestServerExport.errorMessage ? `: ${latestServerExport.errorMessage}` : ""}`}
-                className="h-7 border-rose-500/30 px-2 text-[10px] text-rose-200 sm:px-3 sm:text-xs"
-              >
-                {retryExportMutation.isPending
-                  ? "Retrying…"
-                  : `MP4 ${latestServerExport.status} · Retry`}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={handleServerExport}
-                disabled={serverExportMutation.isPending}
-                className="h-7 border-white/15 px-2 text-[10px] sm:px-3 sm:text-xs"
-              >
-                {serverExportMutation.isPending ? "Starting…" : "Server MP4"}
-              </Button>
-            )
-          ) : null}
+        <div className="relative flex items-center">
           <Button
             size="sm"
-            onClick={handleExport}
-            disabled={exporting}
-            className="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white h-7 text-xs font-semibold px-4 rounded-md shadow-md shadow-sky-500/20 min-w-[80px]"
+            onClick={() => setShowExportMenu(open => !open)}
+            className="h-10 min-w-[116px] rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 px-5 text-sm font-bold uppercase tracking-wide text-white shadow-md shadow-sky-500/20 hover:from-sky-400 hover:to-blue-500"
+            aria-haspopup="menu"
+            aria-expanded={showExportMenu}
           >
-            {exporting ? `${Math.round(exportProgress)}%` : "Browser WebM"}
+            {exporting ? `${Math.round(exportProgress)}%` : "Export"}
+            <ChevronDown className="ml-1.5 h-3.5 w-3.5" />
           </Button>
+
+          {showExportMenu ? (
+            <>
+              <button
+                type="button"
+                className="fixed inset-0 z-40 cursor-default"
+                onClick={() => setShowExportMenu(false)}
+                aria-label="Close export menu"
+              />
+              <div
+                role="menu"
+                aria-label="Export formats"
+                className="absolute right-0 top-10 z-50 w-72 overflow-hidden rounded-xl border border-white/10 bg-[#17171f] p-2 shadow-2xl"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={exporting}
+                  onClick={() => {
+                    setShowExportMenu(false);
+                    void handleExport();
+                  }}
+                  className="w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-white/5 disabled:opacity-50"
+                >
+                  <span className="block text-xs font-semibold text-white">
+                    Browser WebM
+                  </span>
+                  <span className="mt-0.5 block text-[10px] leading-4 text-gray-500">
+                    Renders locally with visible video, mixed audio, transforms,
+                    effects, and burned-in captions. Maximum 2 hours / 500 MB.
+                  </span>
+                </button>
+
+                {reelioMode === "cloud" ? (
+                  <div className="mt-1 border-t border-white/[0.07] pt-1">
+                    {latestServerExport?.status === "done" &&
+                    latestServerExport.url ? (
+                      <a
+                        href={latestServerExport.url}
+                        download
+                        role="menuitem"
+                        onClick={() => setShowExportMenu(false)}
+                        className="block rounded-lg px-3 py-2.5 text-left hover:bg-white/5"
+                      >
+                        <span className="block text-xs font-semibold text-emerald-300">
+                          Download server MP4
+                        </span>
+                        <span className="mt-0.5 block text-[10px] text-gray-500">
+                          The latest 720p FFmpeg render completed successfully.
+                        </span>
+                      </a>
+                    ) : latestServerExport?.status === "processing" ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setShowExportMenu(false);
+                          void handleCancelServerExport();
+                        }}
+                        className="w-full rounded-lg px-3 py-2.5 text-left hover:bg-white/5"
+                      >
+                        <span className="block text-xs font-semibold text-amber-300">
+                          Server MP4 · {latestServerExport.progress}%
+                        </span>
+                        <span className="mt-0.5 block text-[10px] text-gray-500">
+                          Rendering in the background. Select to request cancellation.
+                        </span>
+                      </button>
+                    ) : latestServerExport?.status === "failed" ||
+                      latestServerExport?.status === "cancelled" ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={retryExportMutation.isPending}
+                        title={latestServerExport.errorMessage ?? undefined}
+                        onClick={() => {
+                          setShowExportMenu(false);
+                          void handleRetryServerExport();
+                        }}
+                        className="w-full rounded-lg px-3 py-2.5 text-left hover:bg-white/5 disabled:opacity-50"
+                      >
+                        <span className="block text-xs font-semibold text-rose-300">
+                          Retry server MP4
+                        </span>
+                        <span className="mt-0.5 block text-[10px] text-gray-500">
+                          Last render {latestServerExport.status}. Select to retry 720p MP4.
+                        </span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={serverExportMutation.isPending}
+                        onClick={() => {
+                          setShowExportMenu(false);
+                          void handleServerExport();
+                        }}
+                        className="w-full rounded-lg px-3 py-2.5 text-left hover:bg-white/5 disabled:opacity-50"
+                      >
+                        <span className="block text-xs font-semibold text-white">
+                          Server MP4 · 720p
+                        </span>
+                        <span className="mt-0.5 block text-[10px] leading-4 text-gray-500">
+                          Uses FFmpeg in cloud mode and keeps rendering while you edit.
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="mt-1 border-t border-white/[0.07] px-3 pt-2 text-[10px] leading-4 text-gray-600">
+                    MP4 rendering is available after saving this local project to cloud mode.
+                  </p>
+                )}
+              </div>
+            </>
+          ) : null}
         </div>
       </header>
 
       {/* Main Workspace 3-Column Area */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-visible lg:flex-row lg:overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-visible lg:grid lg:grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,2fr)] lg:overflow-hidden">
         {/* Left Column: Category Navigation + Media Library / Effects */}
-        <div className="flex h-[420px] w-full min-w-0 max-w-none flex-shrink-0 flex-col border-b border-white/[0.07] bg-[#111116] lg:h-full lg:w-80 lg:min-w-[320px] lg:max-w-[360px] lg:border-b-0 lg:border-r">
-          <LeftCategoryNav
-            activeCategory={activeCategory}
-            onSelectCategory={setActiveCategory}
-            activeSubTab={activeSubTab}
-            onSelectSubTab={setActiveSubTab}
-          />
+        <div className="flex h-[420px] w-full min-w-0 max-w-none flex-shrink-0 flex-col border-b border-white/[0.07] bg-[#111116] lg:h-full lg:border-b-0 lg:border-r">
           {activeCategory === "media" ? (
             <MediaGrid
               assets={assets ?? []}
@@ -2400,7 +2637,7 @@ export default function Editor() {
                       <button
                         type="button"
                         key={`${boundary.time}-${index}`}
-                        onClick={() => setCurrentTime(boundary.time)}
+                        onClick={() => seekTimeline(boundary.time)}
                         className="rounded bg-sky-500/10 px-2 py-1 font-mono text-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
                         aria-label={`Seek to scene boundary at ${formatTime(boundary.time)}, confidence ${boundary.confidence.toFixed(2)}`}
                       >
@@ -2506,7 +2743,7 @@ export default function Editor() {
                   >
                     <button
                       type="button"
-                      onClick={() => setCurrentTime(cue.startTime)}
+                      onClick={() => seekTimeline(cue.startTime)}
                       className="text-[10px] font-mono text-sky-400 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
                       aria-label={`Seek to caption at ${formatTime(cue.startTime)}`}
                     >
@@ -2719,80 +2956,69 @@ export default function Editor() {
         </div>
 
         {/* Center Column: Video Preview Viewport & Floating Player Bar */}
-        <div className="relative flex min-h-[420px] min-w-0 flex-1 flex-col items-center justify-between overflow-hidden bg-black p-2 sm:p-4">
+        <div className="relative flex min-h-[420px] min-w-0 flex-col items-center justify-between overflow-hidden bg-black p-2 sm:p-3 lg:min-h-0">
+          {selectedClips[0] ? (
+            <ClipInspectorPanel
+              clip={selectedClips[0]}
+              onClose={() => setSelectedClipIds([])}
+              onToggleMute={() => void handleToggleMute(selectedClips[0])}
+              onToggleVisibility={() =>
+                void handleToggleVisibility(selectedClips[0])
+              }
+              onDelete={() => void handleDeleteClip(selectedClips[0].id)}
+              onUpdate={patch =>
+                void updateActiveClipRenderSetting(patch)
+              }
+              onUpdateTrackVolume={volume =>
+                void updateActiveTrackVolume(volume)
+              }
+              onApplyVideoFx={effect => void handleApplyVideoFx(effect)}
+            />
+          ) : null}
+
           {/* Video Preview Canvas Viewport */}
           <div className="w-full flex-1 flex items-center justify-center relative overflow-hidden rounded-lg bg-[#050508] border border-white/[0.05]">
             {playbackClip?.assetUrl &&
             playbackClip.trackType === "video" &&
             trackStates.video0?.visible !== false ? (
-              <video
-                ref={previewVideoRef}
-                src={playbackClip.assetUrl}
-                muted={
-                  playbackClip.muted ||
-                  isMuted ||
-                  trackStates.video0?.muted === true ||
-                  !(assets ?? []).find(
-                    asset => asset.id === playbackClip.assetId
-                  )?.hasAudio
-                }
-                playsInline
-                style={{
-                  filter:
-                    playbackClip.videoFx === "Cinematic LUT"
-                      ? "contrast(1.2) saturate(1.2) brightness(0.95)"
-                      : playbackClip.videoFx === "Vibrant HDR"
-                        ? "saturate(1.45) contrast(1.1) brightness(1.05)"
-                        : playbackClip.videoFx === "Film Grain"
-                          ? "contrast(1.1) sepia(0.15)"
-                          : playbackClip.videoFx === "Vignette Blur"
-                            ? "contrast(1.25)"
-                            : playbackClip.videoFx === "Glow Accent"
-                              ? "brightness(1.15) saturate(1.25)"
-                              : playbackClip.videoFx === "Sharpen"
-                                ? "contrast(1.35)"
-                                : "none",
-                }}
-                className="max-w-full max-h-full object-contain transition-all"
-                onTimeUpdate={handlePreviewTimeUpdate}
-                onLoadedMetadata={handlePreviewLoadedMetadata}
-                onPlay={() => setIsPlaying(true)}
-                onEnded={() => {
-                  const nextClip = [...timelineClips]
-                    .filter(
-                      clip => clip.timelineStart > playbackClip.timelineStart
-                    )
-                    .sort((a, b) => a.timelineStart - b.timelineStart)[0];
-                  if (nextClip?.assetUrl) {
-                    const nextVideo = previewVideoRef.current;
-                    autoplayNextRef.current = true;
-                    setCurrentTime(nextClip.timelineStart);
-                    if (nextVideo) {
-                      nextVideo.src = nextClip.assetUrl;
-                      nextVideo.currentTime = nextClip.sourceStart;
-                      nextVideo.addEventListener(
-                        "loadedmetadata",
-                        () =>
-                          void nextVideo
-                            .play()
-                            .catch(() => setIsPlaying(false)),
-                        { once: true }
-                      );
-                      nextVideo.load();
-                    }
-                  } else {
-                    setCurrentTime(totalDuration);
+              playbackClip.assetMimeType.startsWith("image/") ? (
+                <img
+                  src={playbackClip.assetUrl}
+                  alt={playbackClip.assetName}
+                  style={previewMediaStyle}
+                  className="max-h-full max-w-full object-contain transition-all"
+                  decoding="async"
+                />
+              ) : (
+                <video
+                  ref={previewVideoRef}
+                  src={playbackClip.assetUrl}
+                  muted={
+                    playbackClip.muted ||
+                    isMuted ||
+                    trackStates.video0?.muted === true ||
+                    !(assets ?? []).find(
+                      asset => asset.id === playbackClip.assetId
+                    )?.hasAudio
                   }
-                }}
-              />
+                  playsInline
+                  style={previewMediaStyle}
+                  className="max-h-full max-w-full object-contain transition-all"
+                  onLoadedMetadata={handlePreviewLoadedMetadata}
+                />
+              )
             ) : (
               <div className="text-center p-6">
                 <FileVideo className="w-16 h-16 text-gray-700 mx-auto mb-3" />
                 <p className="text-gray-400 font-medium text-sm">
-                  Upload or select a video to preview
+                  {contentDuration > 0
+                    ? "No visible video at this playhead"
+                    : "Upload media to preview"}
                 </p>
                 <p className="text-gray-600 text-xs mt-1">
-                  Full-stack multi-track timeline editing
+                  {contentDuration > 0
+                    ? "Playback continues across timeline gaps and audio clips."
+                    : "Imported media is added to the timeline automatically."}
                 </p>
               </div>
             )}
@@ -2840,8 +3066,8 @@ export default function Editor() {
               onSkipForward={handleSkipForward}
               isMuted={isMuted}
               onToggleMute={() => setIsMuted(!isMuted)}
-              onZoomIn={() => setZoomLevel(Math.min(200, zoomLevel + 10))}
-              onZoomOut={() => setZoomLevel(Math.max(20, zoomLevel - 10))}
+              onZoomIn={() => setZoomLevel(Math.min(240, zoomLevel + 10))}
+              onZoomOut={() => setZoomLevel(Math.max(4, zoomLevel - 10))}
             />
           </div>
         </div>
@@ -2854,12 +3080,19 @@ export default function Editor() {
           timelineDuration={timelineContentEnd(timelineClips)}
           onExecuteQuickAction={handleExecuteQuickAction}
           onSendMessage={handleAISendMessage}
+          onNewChat={handleNewAIChat}
           aiLoading={aiLoading}
           aiPhase={aiPhase}
           pendingPlan={pendingPlan}
           proposalProvenance={pendingProvenance}
           selectedOpIndices={selectedOpIndices}
           onToggleOpSelection={toggleOpSelection}
+          onPreviewOperation={index => {
+            const operation = pendingPlan?.operations[index];
+            if (!operation) return;
+            const range = getAffectedRanges(operation, timelineClips)[0];
+            if (range) seekTimeline(range.start);
+          }}
           onApplyPlan={handleApplyPlan}
           onRejectPlan={handleRejectPlan}
           onCancel={handleAICancel}
@@ -2895,18 +3128,25 @@ export default function Editor() {
         }
         canDelete={selectedClipIds.length > 0}
         onDelete={() => handleDeleteClips(selectedClipIds)}
+        canDuplicate={selectedClips.length > 0}
+        onDuplicate={() => void handleDuplicateClips(selectedClips)}
         snapping={snapping}
         onToggleSnapping={() => setSnapping(!snapping)}
         currentTime={currentTime}
         zoomLevel={zoomLevel}
-        onZoomIn={() => setZoomLevel(Math.min(200, zoomLevel + 10))}
-        onZoomOut={() => setZoomLevel(Math.max(20, zoomLevel - 10))}
+        onZoomIn={() => setZoomLevel(Math.min(240, zoomLevel + 10))}
+        onZoomOut={() => setZoomLevel(Math.max(4, zoomLevel - 10))}
+        onZoomFit={() => {
+          const availableWidth = Math.max(320, window.innerWidth - 224);
+          const fittedZoom = availableWidth / Math.max(10, contentDuration);
+          setZoomLevel(Math.max(4, Math.min(240, fittedZoom)));
+        }}
         isRippleActive={isRippleActive}
         onToggleRipple={() => setIsRippleActive(!isRippleActive)}
       />
 
       {/* Bottom Multi-Track Timeline (Captions, Video 1, Audio 1, Audio 2) */}
-      <div className="h-72 min-h-72 bg-[#0c0c14] flex flex-col flex-shrink-0">
+      <div className="flex h-[268px] min-h-[268px] flex-shrink-0 flex-col bg-[#0c0c14]">
         <MultiTrackTimeline
           clips={timelineClips}
           captions={captions}
@@ -2924,7 +3164,7 @@ export default function Editor() {
             );
           }}
           onSeek={time => {
-            setCurrentTime(time);
+            seekTimeline(time);
             if (previewVideoRef.current) {
               const active = timelineClips.find(
                 c =>
@@ -2952,6 +3192,13 @@ export default function Editor() {
           onToggleTrackLock={handleToggleTrackLock}
           onToggleTrackVisible={handleToggleTrackVisible}
           getWaveformData={getWaveform}
+          getWaveformStatus={assetId =>
+            waveformLoading[assetId]
+              ? "loading"
+              : waveformErrors[assetId]
+                ? "error"
+                : "ready"
+          }
         />
       </div>
 

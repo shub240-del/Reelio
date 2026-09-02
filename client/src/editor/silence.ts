@@ -1,6 +1,24 @@
+import { mergeRanges } from "../../../shared/timeline";
+import { MIN_REVIEWABLE_EDIT_RANGE_SECONDS } from "../../../shared/editOps";
+
 export interface SilenceRange {
   start: number;
   end: number;
+}
+
+/**
+ * Collapse overlapping mapped evidence and discard sub-frame edge fragments.
+ * Source silence is measured in >=250 ms spans, but trimming that evidence to
+ * an already-cut clip can leave floating-point slivers that look like a 0.0s
+ * AI edit. Those are not useful or honest review suggestions.
+ */
+export function normalizeReviewableSilenceRanges(
+  ranges: SilenceRange[],
+  minDuration = MIN_REVIEWABLE_EDIT_RANGE_SECONDS,
+): SilenceRange[] {
+  return mergeRanges(ranges).filter(
+    range => range.end - range.start >= minDuration,
+  );
 }
 
 /**

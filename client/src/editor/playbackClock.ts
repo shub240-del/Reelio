@@ -26,7 +26,7 @@ export class PlaybackClock {
   private _subscribers: Set<(time: number, isPlaying: boolean) => void> = new Set();
 
   constructor(initialDuration: number = 60) {
-    this._totalDuration = Math.max(initialDuration, 60);
+    this._totalDuration = Math.max(initialDuration, 0);
   }
 
   public get currentTime(): number {
@@ -46,7 +46,7 @@ export class PlaybackClock {
   }
 
   public set totalDuration(duration: number) {
-    this._totalDuration = Math.max(duration, 60);
+    this._totalDuration = Math.max(duration, 0);
     if (this._currentTime > this._totalDuration) {
       this.seek(this._totalDuration);
     }

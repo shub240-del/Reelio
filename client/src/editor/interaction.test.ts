@@ -8,6 +8,8 @@ import {
   nextSelection,
   reindexTrack,
   resolveTrim,
+  rippleDeletePatches,
+  rippleTrimPatches,
   snapCandidates,
   splitOffset,
 } from "./interaction";
@@ -235,5 +237,58 @@ describe("splitOffset", () => {
   it("refuses a split at or past the clip end, which would make a zero-length clip", () => {
     expect(splitOffset(clip, 16)).toBeNull();
     expect(splitOffset(clip, 20)).toBeNull();
+  });
+});
+
+describe("rippleDeletePatches", () => {
+  const clips = [
+    { id: 1, trackId: 0, trackType: "video" as const, timelineStart: 0, duration: 3 },
+    { id: 2, trackId: 0, trackType: "video" as const, timelineStart: 3, duration: 2 },
+    { id: 3, trackId: 0, trackType: "video" as const, timelineStart: 5, duration: 4 },
+    { id: 4, trackId: 0, trackType: "audio" as const, timelineStart: 5, duration: 2 },
+  ];
+
+  it("closes the deleted gap for later clips on the same track", () => {
+    expect(rippleDeletePatches(clips, [2])).toEqual([
+      { id: 3, timelineStart: 3 },
+    ]);
+  });
+
+  it("does not shift clips on a different track", () => {
+    expect(rippleDeletePatches(clips, [1])).toEqual([
+      { id: 2, timelineStart: 0 },
+      { id: 3, timelineStart: 2 },
+    ]);
+  });
+
+  it("merges overlapping deleted ranges instead of double-counting", () => {
+    const overlapping = [
+      { id: 1, trackId: 0, trackType: "video" as const, timelineStart: 0, duration: 4 },
+      { id: 2, trackId: 0, trackType: "video" as const, timelineStart: 2, duration: 4 },
+      { id: 3, trackId: 0, trackType: "video" as const, timelineStart: 6, duration: 2 },
+    ];
+    expect(rippleDeletePatches(overlapping, [1, 2])).toEqual([
+      { id: 3, timelineStart: 0 },
+    ]);
+  });
+});
+
+describe("rippleTrimPatches", () => {
+  const clips = [
+    { id: 1, trackId: 0, trackType: "video" as const, timelineStart: 0, duration: 5 },
+    { id: 2, trackId: 0, trackType: "video" as const, timelineStart: 5, duration: 3 },
+    { id: 3, trackId: 1, trackType: "video" as const, timelineStart: 5, duration: 3 },
+  ];
+
+  it("pulls later same-track clips left when the end is shortened", () => {
+    expect(rippleTrimPatches(clips, 1, 5, 3)).toEqual([
+      { id: 2, timelineStart: 3 },
+    ]);
+  });
+
+  it("pushes later same-track clips right when the end is extended", () => {
+    expect(rippleTrimPatches(clips, 1, 5, 7)).toEqual([
+      { id: 2, timelineStart: 7 },
+    ]);
   });
 });

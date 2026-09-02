@@ -220,7 +220,7 @@ export const appRouter = router({
           fileName: z.string().trim().min(1).max(255),
           mimeType: z
             .string()
-            .regex(/^(video|audio)\/[a-z0-9.+-]+$/i)
+            .regex(/^(video|audio|image)\/[a-z0-9.+-]+$/i)
             .max(128),
           sizeBytes: z.number().int().positive().max(MAX_CLOUD_UPLOAD_BYTES),
           duration: finiteNonNegative.optional(),

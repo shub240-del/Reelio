@@ -20,6 +20,9 @@ const allowedVideoCodecs = new Set([
   "av1",
   "mpeg4",
   "prores",
+  "mjpeg",
+  "png",
+  "webp",
 ]);
 const allowedAudioCodecs = new Set([
   "aac",
@@ -86,6 +89,7 @@ function frameRate(value: string | undefined) {
 
 function validateProbe(raw: unknown, expectedMimeType?: string): ProbedMedia {
   const parsed = rawProbeSchema.parse(raw);
+  const isStillImage = expectedMimeType?.startsWith("image/") ?? false;
   const videoStreams = parsed.streams.filter(
     stream => stream.codec_type === "video"
   );
@@ -110,17 +114,23 @@ function validateProbe(raw: unknown, expectedMimeType?: string): ProbedMedia {
     throw new Error("The declared video file contains no video stream.");
   if (expectedMimeType?.startsWith("audio/") && audioStreams.length === 0)
     throw new Error("The declared audio file contains no audio stream.");
+  if (isStillImage && videoStreams.length === 0)
+    throw new Error("The declared image file contains no image stream.");
 
   const video = videoStreams[0];
   const width = video?.width ?? 0;
   const height = video?.height ?? 0;
-  const fps = video
+  const fps = isStillImage
+    ? 30
+    : video
     ? frameRate(video.avg_frame_rate) || frameRate(video.r_frame_rate)
     : 0;
-  const duration = Math.max(
-    positiveNumber(parsed.format?.duration),
-    ...parsed.streams.map(stream => positiveNumber(stream.duration))
-  );
+  const duration = isStillImage
+    ? 5
+    : Math.max(
+        positiveNumber(parsed.format?.duration),
+        ...parsed.streams.map(stream => positiveNumber(stream.duration))
+      );
   if (duration <= 0 || duration > MEDIA_LIMITS.maxDurationSeconds)
     throw new Error("Media duration is missing or exceeds the two-hour limit.");
   if (

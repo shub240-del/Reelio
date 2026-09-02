@@ -46,6 +46,16 @@ export interface SnapCandidateSource {
   duration: number;
 }
 
+export interface RippleClipSource extends SnapCandidateSource {
+  trackId: number;
+  trackType: "video" | "audio";
+}
+
+export interface TimelineStartPatch {
+  id: number;
+  timelineStart: number;
+}
+
 /**
  * Collects the times a dragged clip should snap to: the origin, the playhead,
  * and the edges of every other clip. The dragged clip is excluded so it cannot
@@ -189,4 +199,85 @@ export function splitOffset(clip: SnapCandidateSource, playhead: number, minDura
   if (offset < minDuration) return null;
   if (offset > clip.duration - minDuration) return null;
   return offset;
+}
+
+function sameTrack(a: RippleClipSource, b: RippleClipSource): boolean {
+  return a.trackId === b.trackId && a.trackType === b.trackType;
+}
+
+/**
+ * Calculates the position updates for a ripple delete. Selected ranges are
+ * merged first, so overlapping selections never collapse the timeline twice.
+ * The function is pure because deletion itself may be persisted by either the
+ * guest store or the cloud API.
+ */
+export function rippleDeletePatches(
+  clips: readonly RippleClipSource[],
+  deletedIds: readonly number[],
+): TimelineStartPatch[] {
+  const deleted = new Set(deletedIds);
+  const removed = clips.filter(clip => deleted.has(clip.id));
+
+  return clips
+    .filter(clip => !deleted.has(clip.id))
+    .map(clip => {
+      const intervals = removed
+        .filter(candidate => sameTrack(candidate, clip) && candidate.timelineStart < clip.timelineStart)
+        .map(candidate => ({
+          start: candidate.timelineStart,
+          end: Math.min(candidate.timelineStart + candidate.duration, clip.timelineStart),
+        }))
+        .filter(interval => interval.end > interval.start)
+        .sort((a, b) => a.start - b.start);
+
+      let collapsed = 0;
+      let rangeStart = -1;
+      let rangeEnd = -1;
+      for (const interval of intervals) {
+        if (rangeStart < 0) {
+          rangeStart = interval.start;
+          rangeEnd = interval.end;
+        } else if (interval.start <= rangeEnd) {
+          rangeEnd = Math.max(rangeEnd, interval.end);
+        } else {
+          collapsed += rangeEnd - rangeStart;
+          rangeStart = interval.start;
+          rangeEnd = interval.end;
+        }
+      }
+      if (rangeStart >= 0) collapsed += rangeEnd - rangeStart;
+
+      return {
+        id: clip.id,
+        timelineStart: Math.max(0, clip.timelineStart - collapsed),
+      };
+    })
+    .filter(patch => {
+      const before = clips.find(clip => clip.id === patch.id);
+      return before && Math.abs(before.timelineStart - patch.timelineStart) > 1e-6;
+    });
+}
+
+/** Moves later clips by the exact end-edge delta of a ripple trim. */
+export function rippleTrimPatches(
+  clips: readonly RippleClipSource[],
+  trimmedId: number,
+  oldEnd: number,
+  newEnd: number,
+): TimelineStartPatch[] {
+  const trimmed = clips.find(clip => clip.id === trimmedId);
+  const delta = newEnd - oldEnd;
+  if (!trimmed || Math.abs(delta) < 1e-6) return [];
+
+  return clips
+    .filter(
+      clip =>
+        clip.id !== trimmedId &&
+        sameTrack(clip, trimmed) &&
+        clip.timelineStart >= oldEnd - 1e-6,
+    )
+    .map(clip => ({
+      id: clip.id,
+      timelineStart: Math.max(0, clip.timelineStart + delta),
+    }));
 }

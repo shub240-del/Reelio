@@ -24,13 +24,20 @@ export const SUPPORTED_MIME_TYPES = [
   "audio/ogg",
   "audio/webm",
   "audio/mp4",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
 ] as const;
 
 /** Extensions accepted when a browser reports an empty or generic MIME type. */
 export const SUPPORTED_EXTENSIONS = [
   ".mp4", ".m4v", ".mov", ".webm", ".mkv",
   ".mp3", ".wav", ".ogg", ".m4a", ".aac",
+  ".jpg", ".jpeg", ".png", ".webp",
 ] as const;
+
+/** Still images have no intrinsic time, so the editor uses an explicit default. */
+export const DEFAULT_IMAGE_DURATION_SECONDS = 5;
 
 export interface MediaProbe {
   duration: number;
@@ -289,10 +296,44 @@ function loadAudioElement(src: string): Promise<HTMLAudioElement> {
   });
 }
 
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("This image file could not be decoded by the browser"));
+    image.src = src;
+  });
+}
+
 /** Full probe of an imported file. Every field is measured, not guessed. */
 export async function probeMedia(file: File): Promise<MediaProbe> {
   const url = URL.createObjectURL(file);
   try {
+    if (
+      file.type.startsWith("image/") ||
+      /\.(jpe?g|png|webp)$/i.test(file.name)
+    ) {
+      const image = await loadImageElement(url);
+      const width = image.naturalWidth;
+      const height = image.naturalHeight;
+      if (width <= 0 || height <= 0)
+        throw new Error("This image has no usable dimensions");
+      return {
+        duration: DEFAULT_IMAGE_DURATION_SECONDS,
+        width,
+        height,
+        fps: 0,
+        fpsConfident: false,
+        aspectRatio: width / height,
+        aspectLabel: aspectRatioLabel(width, height),
+        hasAudio: false,
+        mimeType: file.type || "image/png",
+        sizeBytes: file.size,
+        name: file.name,
+      };
+    }
+
     if (file.type.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|aac)$/i.test(file.name)) {
       const audio = await loadAudioElement(url);
       const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
